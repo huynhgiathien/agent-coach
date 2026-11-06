@@ -1,0 +1,4 @@
+- [Linear draft confirm](p1.md) — show the draft first
+- [pnpm workspaces](r1.md) — repo layout
+- [Deploy notes](d1.md) — staging first
+- [Deploy notes](d2.md) — checklist location

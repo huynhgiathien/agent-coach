@@ -1,0 +1,15 @@
+{
+  "name": "agent-coach-plugin",
+  "owner": {
+    "name": "Thien Huynh"
+  },
+  "description": "Workflow coaching for Claude Code, Codex and omp",
+  "plugins": [
+    {
+      "name": "agent-coach",
+      "source": "./",
+      "description": "Analyze your agent history and improve skills, agents and prompts",
+      "displayName": "Agent Coach"
+    }
+  ]
+}

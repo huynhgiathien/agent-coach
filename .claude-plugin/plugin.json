@@ -1,0 +1,31 @@
+{
+  "name": "agent-coach",
+  "displayName": "Agent Coach",
+  "version": "0.1.0",
+  "description": "Analyze your Claude Code, Codex and omp history (prompts, skills, agents, token cost, prompt cache, memories) and improve skills, agents and prompts through MCP tools, two skills, and a CLI",
+  "author": {
+    "name": "Thien Huynh"
+  },
+  "repository": "https://github.com/huynhgiathien/agent-coach",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "agents",
+    "usage",
+    "prompt-cache",
+    "memory"
+  ],
+  "icon": "./assets/logo.svg",
+  "mcpServers": {
+    "agent-coach": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/server.mjs"
+      ]
+    }
+  },
+  "homepage": "https://github.com/huynhgiathien/agent-coach",
+  "documentationUrl": "https://github.com/huynhgiathien/agent-coach#readme",
+  "supportUrl": "https://github.com/huynhgiathien/agent-coach/issues",
+  "privacyPolicyUrl": "https://github.com/huynhgiathien/agent-coach#privacy"
+}

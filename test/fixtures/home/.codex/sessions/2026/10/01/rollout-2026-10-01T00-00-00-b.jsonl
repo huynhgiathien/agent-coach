@@ -1,0 +1,4 @@
+{"timestamp":"2026-10-01T00:00:00.000Z","type":"session_meta","payload":{"id":"codex-b","session_id":"codex-b","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/proj","originator":"codex_exec","cli_version":"0.50.0","source":"exec","model_provider":"openai"}}
+{"timestamp":"2026-10-01T00:00:00.010Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"/proj","model":"gpt-test"}}
+{"timestamp":"2026-10-01T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"EXEC_PROMPT_MUST_NOT_APPEAR","images":[]}}
+{"timestamp":"2026-10-01T00:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cat ~/.codex/skills/bar/SKILL.md\"}","call_id":"call_1"}}

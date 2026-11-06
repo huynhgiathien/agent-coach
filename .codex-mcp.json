@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agent-coach": {
+      "command": "node",
+      "args": [
+        "./server.mjs"
+      ],
+      "cwd": "."
+    }
+  }
+}

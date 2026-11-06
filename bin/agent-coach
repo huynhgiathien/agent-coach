@@ -1,0 +1,77 @@
+#!/usr/bin/env node
+// Analyze local Claude Code, Codex and omp history from the shell.
+//
+//   agent-coach digest --days 30 --source omp,claude
+//   agent-coach digest --json
+//   agent-coach assets --kind skill
+//   agent-coach examples 1a2b3c4d5e --limit 5
+//   agent-coach decide 1a2b3c4d5e dismissed --note "not useful"
+
+import os from 'node:os';
+import { parseArgs } from 'node:util';
+import { SOURCES, buildDigest, digestJson, filterDigest, formatAssets, formatExamples, renderMarkdown } from '../lib/digest.mjs';
+import { listAssets } from '../lib/inventory.mjs';
+import { readLastDigest, recordDecision } from '../lib/state.mjs';
+
+const usage =
+  'usage: agent-coach digest [--days N] [--source omp,claude,codex] [--min-count N] [--name skill-or-agent] [--all] [--json]\n' +
+  '       agent-coach assets [--kind skill|agent|command|context|memory]\n' +
+  '       agent-coach examples <finding-id> [--limit N]\n' +
+  '       agent-coach decide <finding-id> accepted|dismissed [--note text]';
+
+const ARITY = { digest: 0, assets: 0, examples: 1, decide: 2 };
+
+function count(value, flag) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`--${flag} must be a positive number`);
+  return n;
+}
+
+const home = os.homedir();
+
+try {
+  const { values: opts, positionals } = parseArgs({
+    allowPositionals: true,
+    options: {
+      days: { type: 'string', default: '90' },
+      source: { type: 'string', default: SOURCES.join(',') },
+      'min-count': { type: 'string', default: '3' },
+      all: { type: 'boolean', default: false },
+      json: { type: 'boolean', default: false },
+      kind: { type: 'string' },
+      limit: { type: 'string', default: '20' },
+      note: { type: 'string' },
+      name: { type: 'string' },
+      help: { type: 'boolean', short: 'h', default: false },
+    },
+  });
+  const [command, ...args] = positionals;
+  if (opts.help) {
+    console.log(usage);
+  } else if (!(command in ARITY) || args.length !== ARITY[command]) {
+    console.error(usage);
+    process.exitCode = 1;
+  } else if (command === 'digest') {
+    const digest = await buildDigest({
+      home,
+      sinceDays: count(opts.days, 'days'),
+      sources: opts.source.split(',').map((s) => s.trim()).filter(Boolean),
+      minCount: count(opts['min-count'], 'min-count'),
+      includeDecided: opts.all,
+    });
+    const shown = filterDigest(digest, opts.name);
+    process.stdout.write(opts.json ? `${digestJson(shown)}\n` : renderMarkdown(shown));
+  } else if (command === 'assets') {
+    const assets = (await listAssets({ home })).filter((a) => !opts.kind || a.kind === opts.kind);
+    console.log(formatAssets(assets, await readLastDigest(home)));
+  } else if (command === 'examples') {
+    console.log(formatExamples(await readLastDigest(home), args[0], count(opts.limit, 'limit')));
+  } else {
+    const [id, status] = args;
+    await recordDecision(home, { id, status, note: opts.note });
+    console.log(`Recorded ${status} for ${id}.`);
+  }
+} catch (error) {
+  console.error(`error: ${error.message}`);
+  process.exitCode = 1;
+}

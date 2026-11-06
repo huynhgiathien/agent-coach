@@ -1,0 +1,8 @@
+{"timestamp":"2026-10-01T00:00:00.000Z","type":"session_meta","payload":{"id":"codex-a","session_id":"codex-a","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/proj","originator":"codex_cli_rs","cli_version":"0.50.0","source":"cli","model_provider":"openai"}}
+{"timestamp":"2026-10-01T00:00:00.010Z","type":"turn_context","payload":{"turn_id":"t1","cwd":"/proj","model":"gpt-test"}}
+{"timestamp":"2026-10-01T00:00:00.020Z","type":"event_msg","payload":{"type":"user_message","message":"<environment_context>\n  <cwd>/proj</cwd>\n</environment_context>","images":[]}}
+{"timestamp":"2026-10-01T00:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"summarize the build failure","images":[]}}
+{"timestamp":"2026-10-01T00:00:01.100Z","type":"event_msg","payload":{"type":"item_completed","thread_id":"th","turn_id":"t1","item":{"type":"UserMessage","id":"m1","content":[{"type":"text","text":"summarize the build failure","text_elements":[]}]}}}
+{"timestamp":"2026-10-01T00:00:02.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cat ~/.codex/skills/foo/SKILL.md\"}","call_id":"call_1"}}
+{"timestamp":"2026-10-01T00:00:02.100Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"TOOL_RESULT_TEXT"}}
+{"timestamp":"2026-10-01T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":null}}

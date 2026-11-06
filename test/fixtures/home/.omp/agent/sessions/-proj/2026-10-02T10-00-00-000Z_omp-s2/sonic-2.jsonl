@@ -1,0 +1,5 @@
+{"type":"title","v":1,"title":"Fixture session","source":"auto","updatedAt":"2026-10-02T10:02:00.000Z","pad":""}
+{"type":"session","version":3,"id":"omp-s2-sonic-2","timestamp":"2026-10-02T10:02:00.000Z","cwd":"/proj","parentSession":"omp-s2"}
+{"type":"session_init","systemPrompt":"sys","task":"do the task","tools":["read"],"agent":"sonic","resolvedModel":"anthropic/claude-test","readOnly":true,"spawns":"","id":"e00002b","parentId":null,"timestamp":"2026-10-02T10:02:00.000Z"}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"SUBAGENT_TASK_sonic_2"}],"attribution":"agent","timestamp":1790935320000},"id":"e00002c","parentId":"e00002b","timestamp":"2026-10-02T10:02:00.000Z"}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"anthropic-messages","provider":"anthropic","model":"claude-test","usage":{"input":10,"output":100,"cacheRead":900,"cacheWrite":90,"totalTokens":1100,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0.1}},"stopReason":"stop","timestamp":1790935350000},"id":"e00002d","parentId":"e00002c","timestamp":"2026-10-02T10:02:30.000Z"}
