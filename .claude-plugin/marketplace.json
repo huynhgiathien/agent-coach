@@ -3,7 +3,7 @@
   "owner": {
     "name": "Thien Huynh"
   },
-  "description": "Workflow coaching for Claude Code, Codex and omp",
+  "description": "Workflow coaching for Claude Code, Codex, Cursor and omp",
   "plugins": [
     {
       "name": "agent-coach",

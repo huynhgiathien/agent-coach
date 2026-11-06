@@ -1,25 +1,36 @@
 #!/usr/bin/env node
-// Analyze local Claude Code, Codex and omp history from the shell.
+// Analyze local Claude Code, Codex, Cursor and omp history from the shell.
 //
-//   agent-coach digest --days 30 --source omp,claude
+//   agent-coach digest --days 30 --source omp,claude,cursor
 //   agent-coach digest --json
+//   agent-coach dashboard --days 30
+//   agent-coach check ~/.claude/skills/linear-comment/SKILL.md
 //   agent-coach assets --kind skill
 //   agent-coach examples 1a2b3c4d5e --limit 5
 //   agent-coach decide 1a2b3c4d5e dismissed --note "not useful"
+//   agent-coach install-cursor-mcp
 
+import fs from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { publishDashboard } from '../lib/dashboard.mjs';
 import { SOURCES, buildDigest, digestJson, filterDigest, formatAssets, formatExamples, renderMarkdown } from '../lib/digest.mjs';
 import { listAssets } from '../lib/inventory.mjs';
+import { auditFile, formatAudit } from '../lib/standards.mjs';
 import { readLastDigest, recordDecision } from '../lib/state.mjs';
 
 const usage =
-  'usage: agent-coach digest [--days N] [--source omp,claude,codex] [--min-count N] [--name skill-or-agent] [--all] [--json]\n' +
+  'usage: agent-coach digest [--days N] [--source omp,claude,codex,cursor] [--min-count N] [--name skill-or-agent] [--all] [--json]\n' +
+  '       agent-coach dashboard [--days N] [--source omp,claude,codex,cursor] [--min-count N] [--no-open]\n' +
+  '       agent-coach check <path>\n' +
   '       agent-coach assets [--kind skill|agent|command|context|memory]\n' +
   '       agent-coach examples <finding-id> [--limit N]\n' +
-  '       agent-coach decide <finding-id> accepted|dismissed [--note text]';
+  '       agent-coach decide <finding-id> accepted|dismissed [--note text]\n' +
+  '       agent-coach install-cursor-mcp';
 
-const ARITY = { digest: 0, assets: 0, examples: 1, decide: 2 };
+const ARITY = { digest: 0, dashboard: 0, check: 1, assets: 0, examples: 1, decide: 2, 'install-cursor-mcp': 0 };
 
 function count(value, flag) {
   const n = Number(value);
@@ -28,6 +39,48 @@ function count(value, flag) {
 }
 
 const home = os.homedir();
+
+/**
+ * Register this checkout's MCP server in ~/.cursor/mcp.json, keeping every other key and the file's permissions
+ * (it can hold tokens; a new file is 0600). Never prints the file.
+ */
+function installCursorMcp() {
+  const serverPath = fileURLToPath(new URL('../server.mjs', import.meta.url));
+  const entry = { command: 'node', args: [serverPath] };
+  let file = path.join(home, '.cursor', 'mcp.json');
+  let text = null;
+  let mode = 0o600;
+  try {
+    file = fs.realpathSync(file);
+    text = fs.readFileSync(file, 'utf8');
+    mode = fs.statSync(file).mode & 0o777;
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  let config = { mcpServers: {} };
+  if (text !== null) {
+    try {
+      config = JSON.parse(text);
+    } catch {
+      config = null;
+    }
+    if (!config || typeof config !== 'object' || Array.isArray(config)) {
+      throw new Error(`~/.cursor/mcp.json is not valid JSON; add ${JSON.stringify({ 'agent-coach': entry })} under mcpServers manually`);
+    }
+  }
+  const servers = config.mcpServers && typeof config.mcpServers === 'object' ? config.mcpServers : {};
+  if (JSON.stringify(servers['agent-coach']?.args) === JSON.stringify(entry.args)) {
+    console.log('agent-coach already in ~/.cursor/mcp.json');
+    return;
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (text !== null) fs.copyFileSync(file, `${file}.bak`);
+  config.mcpServers = { ...servers, 'agent-coach': entry };
+  fs.writeFileSync(`${file}.tmp`, `${JSON.stringify(config, null, 2)}\n`, { mode });
+  fs.chmodSync(`${file}.tmp`, mode); // writeFileSync's mode is masked by the umask and ignored for an existing tmp
+  fs.renameSync(`${file}.tmp`, file);
+  console.log('Added agent-coach to ~/.cursor/mcp.json; restart Cursor');
+}
 
 try {
   const { values: opts, positionals } = parseArgs({
@@ -38,6 +91,7 @@ try {
       'min-count': { type: 'string', default: '3' },
       all: { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
+      'no-open': { type: 'boolean', default: false },
       kind: { type: 'string' },
       limit: { type: 'string', default: '20' },
       note: { type: 'string' },
@@ -46,21 +100,30 @@ try {
     },
   });
   const [command, ...args] = positionals;
-  if (opts.help) {
-    console.log(usage);
-  } else if (!(command in ARITY) || args.length !== ARITY[command]) {
-    console.error(usage);
-    process.exitCode = 1;
-  } else if (command === 'digest') {
-    const digest = await buildDigest({
+  const digest = () =>
+    buildDigest({
       home,
       sinceDays: count(opts.days, 'days'),
       sources: opts.source.split(',').map((s) => s.trim()).filter(Boolean),
       minCount: count(opts['min-count'], 'min-count'),
       includeDecided: opts.all,
     });
-    const shown = filterDigest(digest, opts.name);
+  if (opts.help) {
+    console.log(usage);
+  } else if (!Object.hasOwn(ARITY, command ?? '') || args.length !== ARITY[command]) {
+    console.error(usage);
+    process.exitCode = 1;
+  } else if (command === 'digest') {
+    const shown = filterDigest(await digest(), opts.name);
     process.stdout.write(opts.json ? `${digestJson(shown)}\n` : renderMarkdown(shown));
+  } else if (command === 'dashboard') {
+    console.log(await publishDashboard(home, filterDigest(await digest(), opts.name), !opts['no-open']));
+  } else if (command === 'check') {
+    const audit = await auditFile(args[0]);
+    console.log(formatAudit(audit));
+    if (audit.failed.some((f) => f.severity === 'major')) process.exitCode = 1;
+  } else if (command === 'install-cursor-mcp') {
+    installCursorMcp();
   } else if (command === 'assets') {
     const assets = (await listAssets({ home })).filter((a) => !opts.kind || a.kind === opts.kind);
     console.log(formatAssets(assets, await readLastDigest(home)));
@@ -68,8 +131,7 @@ try {
     console.log(formatExamples(await readLastDigest(home), args[0], count(opts.limit, 'limit')));
   } else {
     const [id, status] = args;
-    await recordDecision(home, { id, status, note: opts.note });
-    console.log(`Recorded ${status} for ${id}.`);
+    console.log(await recordDecision(home, { id, status, note: opts.note }));
   }
 } catch (error) {
   console.error(`error: ${error.message}`);

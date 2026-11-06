@@ -3,45 +3,86 @@
 
 import os from 'node:os';
 import { createInterface } from 'node:readline';
+import { publishDashboard } from './lib/dashboard.mjs';
 import { SOURCES, buildDigest, digestJson, filterDigest, formatAssets, formatExamples, renderMarkdown } from './lib/digest.mjs';
 import { listAssets } from './lib/inventory.mjs';
+import { auditFile, formatAudit } from './lib/standards.mjs';
 import { readLastDigest, recordDecision } from './lib/state.mjs';
 
 const KINDS = ['skill', 'agent', 'command', 'context', 'memory'];
+
+/** Digest window, sources and thresholds shared by usage_digest and usage_dashboard. */
+const DIGEST_PARAMS = {
+  since_days: { type: 'number', description: 'Days of history to analyze (default 90)' },
+  sources: { type: 'array', items: { type: 'string', enum: SOURCES }, description: 'CLIs to read (default all)' },
+  min_count: { type: 'number', description: 'Minimum occurrences for a prompt pattern (default 3)' },
+  include_decided: { type: 'boolean', description: 'Also show findings already accepted or dismissed' },
+  name: {
+    type: 'string',
+    description: 'Only findings whose trigger or target is the skill/agent/command with this name',
+  },
+};
+const digestOf = ({ since_days = 90, sources = SOURCES, min_count = 3, include_decided = false }) =>
+  buildDigest({ home: os.homedir(), sinceDays: since_days, sources, minCount: min_count, includeDecided: include_decided });
 
 const TOOLS = [
   {
     name: 'usage_digest',
     annotations: { title: 'Agent usage digest', readOnlyHint: true, openWorldHint: false },
     description:
-      'Analyze local Claude Code, Codex and omp history: sessions, skill/agent/command use, token cost and prompt-cache ' +
-      'hit rates, repeated prompts, follow-up corrections after a skill/agent/mode/command, costly, overlapping and ' +
-      'unused assets, and memories worth promoting. Each finding has an id for finding_examples and record_decision. ' +
+      'Analyze local Claude Code, Codex, Cursor and omp history: sessions, skill/agent/command use, token cost (with its ' +
+      'basis: recorded, allocated or unpriced) and prompt-cache hit rates, repeated prompts, follow-up corrections after a ' +
+      'skill/agent/mode/command, costly, overlapping and unused assets, memories worth promoting, skill-standard scores ' +
+      'and the measured impact of accepted changes. Each finding has an id for finding_examples and record_decision. ' +
       'Prompt text is redacted.',
     inputSchema: {
       type: 'object',
       properties: {
-        since_days: { type: 'number', description: 'Days of history to analyze (default 90)' },
-        sources: { type: 'array', items: { type: 'string', enum: SOURCES }, description: 'CLIs to read (default all)' },
-        min_count: { type: 'number', description: 'Minimum occurrences for a prompt pattern (default 3)' },
-        include_decided: { type: 'boolean', description: 'Also show findings already accepted or dismissed' },
+        ...DIGEST_PARAMS,
         format: { type: 'string', enum: ['markdown', 'json'], description: 'Output format (default markdown)' },
-        name: {
-          type: 'string',
-          description: 'Only findings whose trigger or target is the skill/agent/command with this name',
-        },
       },
     },
-    run: async ({ since_days = 90, sources = SOURCES, min_count = 3, include_decided = false, format = 'markdown', name }) => {
-      const digest = await buildDigest({
-        home: os.homedir(),
-        sinceDays: since_days,
-        sources,
-        minCount: min_count,
-        includeDecided: include_decided,
-      });
-      const shown = filterDigest(digest, name);
+    run: async ({ format = 'markdown', name, ...params }) => {
+      const shown = filterDigest(await digestOf(params), name);
       return format === 'json' ? digestJson(shown) : renderMarkdown(shown);
+    },
+  },
+  {
+    name: 'usage_dashboard',
+    annotations: {
+      title: 'Agent usage dashboard',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+    description:
+      'Build the usage digest, write it as a self-contained HTML dashboard to ~/.agent-coach/dashboard.html (charts of ' +
+      'activity and cost, findings, standards, impact) and open it in the default browser. Returns the dashboard path ' +
+      'and the markdown digest.',
+    inputSchema: {
+      type: 'object',
+      properties: { ...DIGEST_PARAMS, open: { type: 'boolean', description: 'Open the dashboard in the browser (default true)' } },
+    },
+    run: async ({ open = true, name, ...params }) => {
+      const digest = filterDigest(await digestOf(params), name);
+      return `${await publishDashboard(os.homedir(), digest, open)}\n\n${renderMarkdown(digest)}`;
+    },
+  },
+  {
+    name: 'check_asset',
+    annotations: { title: 'Check a skill against the standards', readOnlyHint: true, openWorldHint: false },
+    description:
+      'Score one skill, agent or command file against the skill-standards rubric (frontmatter, trigger, size, links, ' +
+      'boundary, done criteria, unmeasured claims, agent tools). Returns the score and each failed check.',
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Path to SKILL.md or an agent/command .md file; ~ is expanded' } },
+      required: ['path'],
+    },
+    run: async ({ path: file }) => {
+      if (typeof file !== 'string' || !file) throw new Error('path is required');
+      return formatAudit(await auditFile(file));
     },
   },
   {
@@ -87,7 +128,8 @@ const TOOLS = [
     },
     description:
       'Record that a finding was accepted (applied) or dismissed. Dismissed findings never reappear; accepted ones ' +
-      'reappear only if the pattern keeps happening after today.',
+      'reappear only if the pattern keeps happening after today. Accepting stores a baseline metric that later ' +
+      'digests compare in their Impact section.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -97,10 +139,7 @@ const TOOLS = [
       },
       required: ['finding_id', 'status'],
     },
-    run: async ({ finding_id, status, note }) => {
-      await recordDecision(os.homedir(), { id: finding_id, status, note });
-      return `Recorded ${status} for ${finding_id}.`;
-    },
+    run: ({ finding_id, status, note }) => recordDecision(os.homedir(), { id: finding_id, status, note }),
   },
 ];
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Improve my agent workflow"
+  short_description: "Turn repeated corrections into skill, rule and memory changes"
+  default_prompt: "Use $improve-workflow to turn my repeated corrections into skill updates."

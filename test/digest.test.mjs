@@ -3,9 +3,9 @@ import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { FIXTURE_HOME as home, NOW_MS as nowMs, SINCE_DAYS as sinceDays, SECRET, ageFixtures, tmpCoachHome } from './_helpers.mjs';
+import { NOW_MS as nowMs, SINCE_DAYS as sinceDays, SECRET, makeHome, tmpCoachHome } from './_helpers.mjs';
 
-const coachHome = tmpCoachHome();
+const { home, coachDir: coachHome } = makeHome();
 process.env.AGENT_COACH_HOME = coachHome;
 const { buildDigest, renderMarkdown, formatAssets, formatExamples } = await import('../lib/digest.mjs');
 const { recordDecision, readLastDigest } = await import('../lib/state.mjs');
@@ -17,7 +17,6 @@ let digest;
 let markdown;
 
 before(async () => {
-  await ageFixtures();
   digest = await buildDigest({ home, sinceDays, nowMs });
   markdown = renderMarkdown(digest);
 });
@@ -27,6 +26,11 @@ test('markdown has the required sections and stays within 40 000 chars', () => {
     assert.ok(markdown.includes(heading), `missing ${heading}`);
   }
   assert.ok(markdown.length <= MAX, `length ${markdown.length}`);
+});
+
+test('markdown shows each source cost with its basis label', () => {
+  assert.match(markdown, /\$\d+\.\d\d \(recorded\)/);
+  assert.ok(markdown.includes('$0.50 (allocated)'), 'claude cost without its basis');
 });
 
 test('markdown lists the linear-comment follow-up with its editable target', () => {
@@ -113,7 +117,7 @@ test('codex: $-mentions are taken from redacted text, so secrets never become sk
   ].join('\n') + '\n');
 
   const { readEvents } = await import('../lib/sources/codex.mjs');
-  const events = await readEvents({ home: codexHome, sinceMs: Date.parse('2026-09-01') });
+  const { events } = await readEvents({ home: codexHome, sinceMs: Date.parse('2026-09-01') });
   assert.deepEqual(events.filter((e) => e.kind === 'skill').map((e) => e.name), ['foo-bar']);
   assert.equal(JSON.stringify(events).includes('hunter2secret99'), false);
 
@@ -124,6 +128,22 @@ test('codex: $-mentions are taken from redacted text, so secrets never become sk
     const d = await buildDigest({ home: codexHome, sinceDays, nowMs, sources: ['codex'] });
     assert.equal(renderMarkdown(d).includes('hunter2secret99'), false);
     assert.equal(fs.readFileSync(path.join(stateDir, 'last-digest.json'), 'utf8').includes('hunter2secret99'), false);
+  } finally {
+    process.env.AGENT_COACH_HOME = saved;
+  }
+});
+
+test('a selected source with no interactive sessions still gets a 0 row in totals and in the header', async () => {
+  const { home: noCodex, coachDir: state } = makeHome();
+  // Only an SDK run is left: it is skipped, so codex has no session at all.
+  fs.rmSync(path.join(noCodex, '.codex/sessions/2026/10/01/rollout-2026-10-01T00-00-00-a.jsonl'));
+  const saved = process.env.AGENT_COACH_HOME;
+  process.env.AGENT_COACH_HOME = state;
+  try {
+    const d = await buildDigest({ home: noCodex, sinceDays, nowMs, sources: ['omp', 'codex'] });
+    assert.deepEqual(Object.keys(d.totals).sort(), ['codex', 'omp']);
+    assert.deepEqual(d.totals.codex, { sessions: 0, prompts: 0 });
+    assert.match(renderMarkdown(d), /^- codex: 0 sessions, 0 prompts\b/m);
   } finally {
     process.env.AGENT_COACH_HOME = saved;
   }

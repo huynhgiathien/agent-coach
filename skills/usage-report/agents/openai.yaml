@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent usage report"
+  short_description: "Usage, cost, cache and findings dashboard from your agent history"
+  default_prompt: "Use $usage-report to show my agent usage dashboard for the last 30 days."
