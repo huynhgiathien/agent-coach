@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 import { readEvents as readOmp } from '../lib/sources/omp.mjs';
 import { readEvents as readClaude } from '../lib/sources/claude.mjs';
 import { readEvents as readCodex } from '../lib/sources/codex.mjs';
-import { FIXTURE_HOME as home, SINCE_MS as sinceMs, SECRET, mentions } from './_helpers.mjs';
+import { makeHome, SINCE_MS as sinceMs, SECRET, mentions } from './_helpers.mjs';
 
-const omp = await readOmp({ home, sinceMs });
-const claude = await readClaude({ home, sinceMs });
-const codex = await readCodex({ home, sinceMs });
+const { home } = makeHome();
+const [ompResult, claudeResult, codexResult] = await Promise.all([readOmp, readClaude, readCodex].map((read) => read({ home, sinceMs })));
+const { events: omp } = ompResult;
+const { events: claude } = claudeResult;
+const { events: codex } = codexResult;
 
 const of = (events, kind, filter = () => true) => events.filter((e) => e.kind === kind && filter(e));
 const s1 = omp.filter((e) => e.sessionId === 'omp-s1');
@@ -39,9 +41,23 @@ test('omp: s1 yields skill linear-comment (model), skill log-work (user) and age
   assert.deepEqual(of(s1, 'agent').map((e) => e.name), ['scout']);
 });
 
+test('readers return { events, warnings } and the JSONL readers never warn', () => {
+  for (const [name, result] of Object.entries({ omp: ompResult, claude: claudeResult, codex: codexResult })) {
+    assert.ok(Array.isArray(result.events), `${name}.events is not an array`);
+    assert.deepEqual(result.warnings, [], `${name}.warnings`);
+  }
+});
+
 test('omp: every main session reads skill://linear-comment', () => {
   const sessions = new Set(of(omp, 'skill', (e) => e.name === 'linear-comment' && !e.sub).map((e) => e.sessionId));
-  assert.deepEqual([...sessions].sort(), ['omp-s1', 'omp-s2', 'omp-s3']);
+  assert.deepEqual([...sessions].sort(), ['omp-s1', 'omp-s2', 'omp-s3', 'omp-s4', 'omp-s5', 'omp-s6']);
+});
+
+test('omp: s4–s6 read linear-comment before their only typed prompt "post it"', () => {
+  for (const id of ['omp-s4', 'omp-s5', 'omp-s6']) {
+    const s = omp.filter((e) => e.sessionId === id && (e.kind === 'skill' || e.kind === 'prompt'));
+    assert.deepEqual(s.map((e) => e.text ?? `skill:${e.name}`), ['skill:linear-comment', 'post it'], id);
+  }
 });
 
 test('omp: subagent prompts are ignored', () => {
@@ -79,7 +95,7 @@ test('omp: scout/sonic subagent usage is tagged sub with the session_init agent'
 });
 
 test('omp: sinceMs after the fixture dates drops every event', async () => {
-  assert.equal((await readOmp({ home, sinceMs: Date.parse('2026-10-04') })).length, 0);
+  assert.equal((await readOmp({ home, sinceMs: Date.parse('2026-10-23') })).events.length, 0);
 });
 
 test('claude: yields typed prompts, /command prompts and queued prompts; drops duplicates and injected text', () => {

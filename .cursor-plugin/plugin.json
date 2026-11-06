@@ -1,0 +1,22 @@
+{
+  "name": "agent-coach",
+  "displayName": "Agent Coach",
+  "version": "0.1.0",
+  "description": "Analyze your Claude Code, Codex, Cursor and omp history (prompts, skills, agents, token cost, prompt cache, memories) and improve skills, agents and prompts through MCP tools, two skills, a CLI and an HTML dashboard",
+  "author": {
+    "name": "Thien Huynh"
+  },
+  "homepage": "https://github.com/huynhgiathien/agent-coach",
+  "repository": "https://github.com/huynhgiathien/agent-coach",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "agents",
+    "usage",
+    "prompt-cache",
+    "memory",
+    "cursor",
+    "dashboard"
+  ],
+  "skills": "skills"
+}

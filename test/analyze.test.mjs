@@ -1,15 +1,19 @@
-// S4–S8, S13, S14: findings, usage, cost and memory analysis over the fixture home.
+// S4–S8, S13, S14, S15, S17: findings, usage, cost, memory and activity analysis over the fixture home.
 //
-// analyze() is fed omp events only: the Claude fixture also reads skill "linear-comment"
-// (required by the sources test), which would add a 4th trigger (rate 0.75) and a 4th
-// skill turn, contradicting the plan's `rate 1` / `uses 3` assertions.
+// analyze() is fed the events of all four readers. skill "linear-comment" is read 7 times in
+// main sessions (omp s1–s6 and Claude c1); "shorter version" follows it in s1–s3 only.
 import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readEvents as readOmp } from '../lib/sources/omp.mjs';
+import { readEvents as readClaude } from '../lib/sources/claude.mjs';
+import { readEvents as readCodex } from '../lib/sources/codex.mjs';
+import { readEvents as readCursor } from '../lib/sources/cursor.mjs';
 import { listAssets } from '../lib/inventory.mjs';
 import { analyze } from '../lib/analyze.mjs';
-import { FIXTURE_HOME as home, NOW_MS as nowMs, SINCE_MS as sinceMs, ageFixtures, mentions } from './_helpers.mjs';
+import { makeHome, NOW_MS as nowMs, SINCE_MS as sinceMs, HAS_SQLITE, eventsOf, mentions } from './_helpers.mjs';
+
+const noSqlite = !HAS_SQLITE && 'no node:sqlite';
 
 const FOLLOW_UP_TITLE = 'After skill "linear-comment": "shorter version"';
 let events;
@@ -19,8 +23,10 @@ const byType = (result, type) => result.findings.filter((f) => f.type === type);
 const followUp = (result) => result.findings.find((f) => f.type === 'follow_up' && f.title === FOLLOW_UP_TITLE);
 
 before(async () => {
-  await ageFixtures();
-  [events, assets] = await Promise.all([readOmp({ home, sinceMs }), listAssets({ home })]);
+  const { home } = makeHome();
+  const results = await Promise.all([readOmp, readClaude, readCodex, readCursor].map((read) => read({ home, sinceMs })));
+  events = eventsOf(...results);
+  assets = await listAssets({ home });
 });
 
 // ---- inventory ----
@@ -47,11 +53,12 @@ test('inventory: Claude MEMORY.md indexes are not memory assets', () => {
 
 // ---- follow_up / repeated_prompt ----
 
-test('follow_up: "shorter version" after skill linear-comment', () => {
+test('follow_up: "shorter version" after skill linear-comment (3 of 7 runs across omp and Claude)', () => {
   const f = followUp(run());
   assert.ok(f, 'follow_up finding missing');
   assert.equal(f.occurrences, 3);
-  assert.equal(f.rate, 1);
+  assert.equal(f.triggerCount, 7);
+  assert.equal(f.rate, 0.429);
   assert.equal(f.correction, true);
   assert.equal(f.hint, 'update_asset');
   assert.ok(f.target.path.endsWith('.claude/skills/linear-comment/SKILL.md'), f.target.path);
@@ -174,12 +181,81 @@ test('costly_asset: scout flagged against the per-run median, sonic not', () => 
   assert.equal(costly.some((f) => mentions(f, 'sonic')), false);
 });
 
-test('cost.bySkill: linear-comment used in 3 turns', () => {
-  assert.equal(run().cost.bySkill.find((s) => s.name === 'linear-comment').uses, 3);
+// omp s4–s6 read the skill before their first typed prompt; those reads belong to no turn (Step 5).
+test('cost.bySkill: linear-comment used in 4 turns (omp s1–s3 and Claude c1; pre-prompt reads in s4–s6 are in no turn)', () => {
+  assert.equal(run().cost.bySkill.find((s) => s.name === 'linear-comment').uses, 4);
 });
 
 test('cost.bySource: omp cache hit rate is cacheRead / (input + cacheRead + cacheWrite)', () => {
   assert.equal(run().cost.bySource.omp.hitRate, 0.9);
+});
+
+test('costBasis labels each source: omp recorded, claude allocated, codex and cursor unpriced', () => {
+  assert.deepEqual(run().costBasis, { omp: 'recorded', claude: 'allocated', codex: 'unpriced', cursor: 'unpriced' });
+});
+
+// ---- totals / activity (S15, S17) ----
+
+test('totals: omp has 6 main sessions with 14 typed prompts; subagent files are not sessions', () => {
+  assert.deepEqual(run().totals.omp, { sessions: 6, prompts: 14 });
+});
+
+test('totals: cursor counts the main composer only (k2 is a subagent, k3 a draft)', { skip: noSqlite }, () => {
+  assert.deepEqual(run().totals.cursor, { sessions: 1, prompts: 1 });
+});
+
+test('activity.byDay: ascending days that have data, with 2026-10-01 holding s1\'s typed prompts', () => {
+  const { byDay } = run().activity;
+  const days = byDay.map((d) => d.day);
+  assert.deepEqual(days, [...new Set(days)].sort());
+  assert.ok(byDay.every((d) => d.prompts > 0 || d.costUsd > 0), JSON.stringify(byDay));
+  assert.ok(byDay.find((d) => d.day === '2026-10-01').prompts >= 3);
+});
+
+test('activity.byDay: 2026-10-20 has s4\'s one prompt and its two $0.10 assistant messages', () => {
+  const oct20 = run().activity.byDay.find((d) => d.day === '2026-10-20');
+  assert.equal(oct20.prompts, 1);
+  assert.ok(Math.abs(oct20.costUsd - 0.2) < 1e-9, `costUsd ${oct20.costUsd}`);
+});
+
+test('activity.byDay: the Cursor day counts its typed prompt and no unpriced cost', { skip: noSqlite }, () => {
+  const oct10 = run().activity.byDay.find((d) => d.day === '2026-10-10');
+  assert.deepEqual({ prompts: oct10.prompts, costUsd: oct10.costUsd }, { prompts: 1, costUsd: 0 });
+});
+
+// ---- standard_violation (S18) ----
+
+const skillPath = (name) => assets.find((a) => a.kind === 'skill' && a.name === name && a.editable).path;
+const audit = (name, failed) => ({ path: skillPath(name), kind: 'skill', name, score: 50, failed });
+const check = (id, severity) => ({ id, severity, detail: `${id} detail` });
+
+test('standard_violation: >= 1 major or >= 2 minor failed checks become findings; one minor does not', () => {
+  const audits = [
+    audit('linear-comment', [check('trigger', 'major')]),
+    audit('design-system', [check('boundary', 'minor'), check('done', 'minor')]),
+    audit('old-skill', [check('claims', 'minor')]),
+  ];
+  const found = byType(run({ audits }), 'standard_violation').map((f) => f.target.name).sort();
+  assert.deepEqual(found, ['design-system', 'linear-comment']);
+});
+
+test('standard_violation: finding names the failed checks and targets the asset', () => {
+  const a = audit('linear-comment', [check('trigger', 'major'), check('links', 'major')]);
+  const [f] = byType(run({ audits: [a] }), 'standard_violation');
+  assert.equal(f.title, 'Standards: skill "linear-comment" fails trigger, links');
+  assert.equal(f.id, createHash('sha1').update(`standard_violation|${a.path}`).digest('hex').slice(0, 10));
+  assert.equal(f.hint, 'update_asset');
+  assert.equal(f.target.path, a.path);
+  assert.deepEqual([f.count, f.sessions], [2, 0]);
+  assert.deepEqual(f.examples.map((e) => e.text), ['trigger (major): trigger detail', 'links (major): links detail']);
+});
+
+test('findings are ordered by type: follow_up … memory_promotion, standard_violation, overlapping_assets, unused_asset', () => {
+  const ORDER = ['follow_up', 'repeated_prompt', 'costly_asset', 'memory_promotion', 'standard_violation', 'overlapping_assets', 'unused_asset'];
+  const ranks = run({ audits: [audit('linear-comment', [check('trigger', 'major')])] }).findings.map((f) => ORDER.indexOf(f.type));
+  assert.ok(!ranks.includes(-1), 'unknown finding type');
+  assert.deepEqual(ranks, [...ranks].sort((a, b) => a - b));
+  assert.ok(ranks.includes(4), 'standard_violation missing');
 });
 
 // ---- memory (S14) ----
@@ -206,4 +282,72 @@ test('memory summary: counts per project and type', () => {
   const a = run().memory.byProject.find((p) => p.project === '/a');
   assert.equal(a.count, 4);
   assert.deepEqual(a.types, { feedback: 1, project: 3 });
+});
+
+// ---- costly_asset counts priced runs/turns only (reviewer fix 6) ----
+
+const T0 = Date.parse('2026-10-10T00:00:00Z');
+const usageEv = (sessionId, ts, costUsd, extra = {}) => ({
+  source: 'omp', sessionId, cwd: '/p', ts, kind: 'usage', model: 'm', input: 10, output: 10, cacheRead: 0, cacheWrite: 0, costUsd, ...extra,
+});
+/** One subagent run per entry of `costs` (null = unpriced), as agent `name`. */
+const runs = (name, costs) =>
+  costs.map((c, i) => usageEv(`${name}-run-${i}`, T0 + i * 60_000, c, { sub: true, agent: name }));
+/** One main session per entry of `costs`: a typed prompt, an optional skill read, one usage event. */
+const turns = (skill, costs) =>
+  costs.flatMap((c, i) => {
+    const sessionId = `${skill ?? 'plain'}-turn-${i}`;
+    const ts = T0 + i * 60_000;
+    return [
+      { source: 'omp', sessionId, cwd: '/p', ts, kind: 'prompt', text: `${skill ?? 'plain'} task number ${i}` },
+      ...(skill ? [{ source: 'omp', sessionId, cwd: '/p', ts: ts + 1, kind: 'skill', name: skill, how: 'model' }] : []),
+      usageEv(sessionId, ts + 2, c),
+    ];
+  });
+const PRICED_EVENTS = [
+  ...runs('pricey', [10, 10, 10, null, null]), // 3 priced runs at $10, 2 unpriced
+  ...runs('thin', [20, 20, null, null, null]), // only 2 priced runs
+  ...runs('cheap', Array(9).fill(0.1)), // per-run median stays $0.10
+  ...turns('heavy', [5, 5, 5, null, null]), // 3 priced turns at $5, 2 unpriced
+  ...turns(null, Array(9).fill(0.1)), // per-turn median stays $0.10
+];
+const priced = () => analyze(PRICED_EVENTS, [], { minCount: 3, sinceMs, nowMs, sources: ['omp'] });
+
+test('costly_asset agent: cost per run divides by priced runs only', () => {
+  const f = priced().findings.find((x) => x.type === 'costly_asset' && x.trigger?.name === 'pricey');
+  assert.ok(f, 'pricey costly_asset missing');
+  assert.deepEqual({ count: f.count, perUse: f.perUse, costUsd: f.costUsd }, { count: 3, perUse: 10, costUsd: 30 });
+});
+
+test('costly_asset agent: fewer than 3 priced runs is not a candidate, however many unpriced runs it has', () => {
+  assert.equal(priced().findings.some((x) => x.type === 'costly_asset' && x.trigger?.name === 'thin'), false);
+});
+
+test('costly_asset skill: cost per use divides by priced turns only', () => {
+  const f = priced().findings.find((x) => x.type === 'costly_asset' && x.trigger?.name === 'heavy');
+  assert.ok(f, 'heavy costly_asset missing');
+  assert.deepEqual({ count: f.count, perUse: f.perUse, costUsd: f.costUsd }, { count: 3, perUse: 5, costUsd: 15 });
+});
+
+test('cost.byAgent and cost.bySkill rows expose priced runs/uses next to the totals', () => {
+  const { byAgent, bySkill } = priced().cost;
+  const pricey = byAgent.find((a) => a.name === 'pricey');
+  const heavy = bySkill.find((s) => s.name === 'heavy');
+  assert.deepEqual({ runs: pricey.runs, priced: pricey.priced }, { runs: 5, priced: 3 });
+  assert.deepEqual({ uses: heavy.uses, priced: heavy.priced }, { uses: 5, priced: 3 });
+});
+
+test('impact costPerUse: samples are priced runs after the decision; unpriced runs do not dilute the cost', () => {
+  const snapshot = { type: 'costly_asset', title: 'Costly agent "pricey"', kind: 'agent', name: 'pricey', baseline: { metric: 'costPerUse', value: 20, samples: 3 } };
+  const r = analyze(PRICED_EVENTS, [], { minCount: 3, sinceMs, nowMs, decisions: { x: { status: 'accepted', decidedAt: T0 - 1, snapshot } } });
+  const { after, samples, verdict } = r.impact[0];
+  assert.deepEqual({ after, samples, verdict }, { after: 10, samples: 3, verdict: 'improved' });
+});
+
+test('impact costPerUse: no priced run after the decision is insufficient_data with after null', () => {
+  const snapshot = { type: 'costly_asset', title: 'Costly agent "ghost"', kind: 'agent', name: 'ghost', baseline: { metric: 'costPerUse', value: 20, samples: 3 } };
+  const events = runs('ghost', [null, null, null, null]);
+  const r = analyze(events, [], { minCount: 3, sinceMs, nowMs, decisions: { x: { status: 'accepted', decidedAt: T0 - 1, snapshot } } });
+  const { after, samples, verdict } = r.impact[0];
+  assert.deepEqual({ after, samples, verdict }, { after: null, samples: 0, verdict: 'insufficient_data' });
 });
