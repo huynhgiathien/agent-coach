@@ -1,6 +1,6 @@
 {
   "name": "agent-coach",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Analyze your Claude Code, Codex, Cursor and omp history (prompts, skills, agents, token cost, prompt cache, memories) and improve skills, agents and prompts through MCP tools, two skills, a CLI and an HTML dashboard",
   "author": {
     "name": "Thien Huynh"

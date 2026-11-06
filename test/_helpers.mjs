@@ -115,3 +115,37 @@ export const mentions = (value, needle) => JSON.stringify(value).includes(needle
 
 /** Events of every reader result `{ events, warnings }`, concatenated in reader order. */
 export const eventsOf = (...results) => results.flatMap((r) => r.events);
+
+/**
+ * Write `<home>/.claude/projects/<slug>/<sessionId>.jsonl` from compact records, one minute apart from `start`:
+ * a string is a typed prompt; `{ text, ...flags }` a user record with extra top-level flags (isSidechain …);
+ * `{ meta }` an isMeta text record; `{ skill }` / `{ agent }` an assistant Skill / Agent tool_use.
+ */
+export function writeClaudeSession(home, { sessionId, cwd, start, records, slug = '-t' }) {
+  const file = path.join(home, '.claude', 'projects', slug, `${sessionId}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const lines = records.map((r, i) => {
+    const base = { sessionId, cwd, uuid: `${sessionId}-${i}`, timestamp: new Date(Date.parse(start) + i * 60_000).toISOString() };
+    if (typeof r === 'string') return { ...base, type: 'user', message: { role: 'user', content: r } };
+    if (r.meta) return { ...base, type: 'user', isMeta: true, message: { role: 'user', content: [{ type: 'text', text: r.meta }] } };
+    if (r.skill || r.agent) {
+      const item = r.skill
+        ? { type: 'tool_use', id: `tu-${i}`, name: 'Skill', input: { skill: r.skill } }
+        : { type: 'tool_use', id: `tu-${i}`, name: 'Agent', input: { subagent_type: r.agent, prompt: 'p' } };
+      return { ...base, type: 'assistant', message: { id: `msg-${sessionId}-${i}`, role: 'assistant', model: 'claude-x', content: [item] } };
+    }
+    const { text, ...flags } = r;
+    return { ...base, ...flags, type: 'user', message: { role: 'user', content: text } };
+  });
+  fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  return file;
+}
+
+/** Write a frontmatter markdown asset at `<root>/<rel>`; `mtime` (Date) backdates it. Returns its path. */
+export function writeAsset(root, rel, { name, description, mtime } = {}) {
+  const file = path.join(root, rel);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `---\nname: ${name}\ndescription: ${description}\n---\n\nBody.\n`);
+  if (mtime) fs.utimesSync(file, mtime, mtime);
+  return file;
+}

@@ -3,7 +3,8 @@ import test, { before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { NOW_MS as nowMs, SINCE_DAYS as sinceDays, SECRET, makeHome, tmpCoachHome } from './_helpers.mjs';
+import { NOW_MS as nowMs, SINCE_DAYS as sinceDays, SECRET, makeHome, mentions, tmpCoachHome, writeAsset, writeClaudeSession } from './_helpers.mjs';
+import { analyze } from '../lib/analyze.mjs';
 
 const { home, coachDir: coachHome } = makeHome();
 process.env.AGENT_COACH_HOME = coachHome;
@@ -147,4 +148,103 @@ test('a selected source with no interactive sessions still gets a 0 row in total
   } finally {
     process.env.AGENT_COACH_HOME = saved;
   }
+});
+
+// ---- COACH1: project assets end to end; asset findings survive truncation ----
+
+test('COACH1-S4 project assets from session cwds get audits, overlap, unused and follow-up targets', async () => {
+  const h = tmpCoachHome();
+  const repo = path.join(h, 'work', 'repo');
+  const OLD = new Date('2020-01-01T00:00:00Z');
+  const homeReview = writeAsset(h, '.claude/skills/review/SKILL.md', { name: 'review', description: 'Review a pull request' });
+  const projReview = writeAsset(repo, '.claude/skills/review/SKILL.md', { name: 'review', description: 'Review a pull request in this repo' });
+  const projSkill = writeAsset(repo, '.claude/skills/proj-skill/SKILL.md', { name: 'proj-skill', description: 'Summarize the sprint task' });
+  const staleAgent = writeAsset(repo, '.claude/agents/stale-agent.md', { name: 'stale-agent', description: 'Old helper', mtime: OLD });
+  for (const d of [1, 2, 3]) {
+    writeClaudeSession(h, {
+      slug: '-work-repo',
+      sessionId: `proj-${d}`,
+      cwd: repo,
+      start: `2026-10-0${d}T10:00:00.000Z`,
+      records: [
+        'start the sprint task',
+        { skill: 'proj-skill' },
+        { meta: `Base directory for this skill: ${path.dirname(projSkill)}\n\nPROJ_BODY` },
+        'make the summary shorter',
+      ],
+    });
+  }
+  const saved = process.env.AGENT_COACH_HOME;
+  process.env.AGENT_COACH_HOME = tmpCoachHome();
+  let d;
+  try {
+    d = await buildDigest({ home: h, sinceDays, nowMs, sources: ['claude'] });
+  } finally {
+    process.env.AGENT_COACH_HOME = saved;
+  }
+  const of = (type) => d.findings.filter((f) => f.type === type);
+  assert.ok(d.standards.some((a) => a.path === projSkill), 'project skill not audited');
+  assert.ok(d.standards.some((a) => a.path === staleAgent), 'project agent not audited');
+  const overlap = of('overlapping_assets').find((f) => f.examples.some((e) => e.cwd === projReview));
+  assert.ok(overlap, 'no overlap between the home and project "review" skills');
+  assert.ok(overlap.examples.some((e) => e.cwd === homeReview));
+  assert.deepEqual(of('unused_asset').map((f) => f.target.path), [staleAgent]);
+  const follow = of('follow_up').find((f) => f.trigger.kind === 'skill' && f.trigger.name === 'proj-skill');
+  assert.ok(follow, 'proj-skill follow_up missing');
+  assert.equal(follow.target?.path, projSkill);
+});
+
+test('COACH1-S8 standards, overlap and unused findings lead the list and survive the 40 000-char cut', () => {
+  const DAY = 86_400_000;
+  const start = Date.parse('2026-10-01T00:00:00Z');
+  const events = [];
+  for (const s of [1, 2, 3]) {
+    for (let i = 0; i < 20; i++) {
+      const text = Array.from({ length: 20 }, (_, j) => `c${i}w${j}x`).join(' ');
+      events.push({ source: 'omp', sessionId: `bulk-${s}`, cwd: '/proj', ts: start + s * DAY + i * 2 * 3_600_000, kind: 'prompt', text });
+    }
+  }
+  const old = Date.parse('2020-01-01');
+  const recent = nowMs - 5 * DAY;
+  const skill = (name, dir, mtimeMs) => ({ kind: 'skill', name, description: `${name} helper`, path: `${dir}/${name}/SKILL.md`, editable: true, origin: 'claude', mtimeMs });
+  const fail = (id) => ({ id, severity: 'major', detail: `${id} ${'detail '.repeat(40)}` });
+  // 300 recent skills with two failed checks each overflow the markdown; "stale" (three failures) is the
+  // best standards finding and the only unused skill; the recent "dup" pair overlaps.
+  const bulk = Array.from({ length: 300 }, (_, i) => skill(`bulk-${String(i).padStart(3, '0')}`, '/h/.claude/skills', recent));
+  const stale = skill('stale', '/h/.claude/skills', old);
+  const assets = [...bulk, skill('dup', '/h/.claude/skills', recent), skill('dup', '/h/.agents/skills', recent), stale];
+  const audits = [
+    ...bulk.map((a) => ({ path: a.path, kind: 'skill', name: a.name, score: 50, failed: [fail('trigger'), fail('links')] })),
+    { path: stale.path, kind: 'skill', name: 'stale', score: 30, failed: [fail('trigger'), fail('links'), fail('done')] },
+  ];
+  const d = analyze(events, assets, { minCount: 3, sinceMs: nowMs - 90 * DAY, nowMs, audits, sources: ['omp'] });
+  const firstTen = d.findings.slice(0, 10).map((f) => f.type);
+  for (const type of ['repeated_prompt', 'standard_violation', 'overlapping_assets', 'unused_asset']) {
+    assert.ok(firstTen.includes(type), `${type} not in the first 10: ${firstTen.join(', ')}`);
+  }
+  const md = renderMarkdown(d);
+  assert.ok(md.length <= MAX, `length ${md.length}`);
+  assert.match(md, /\(\d+ findings omitted; use finding_examples or --json\)/, 'fixture too small: nothing was cut');
+  for (const title of ['Standards: skill "stale"', '2 skill files named "dup"', 'Unused skill "stale"']) {
+    assert.ok(md.includes(title), `${title} cut from the markdown`);
+  }
+});
+
+test('COACH1-S11 digest.standards audits one of two identical project copies', async () => {
+  const h = tmpCoachHome();
+  const one = writeAsset(path.join(h, 'work', 'one'), '.claude/skills/fmt/SKILL.md', { name: 'fmt', description: 'Format code' });
+  const two = writeAsset(path.join(h, 'work', 'two'), '.claude/skills/fmt/SKILL.md', { name: 'fmt', description: 'Format code' });
+  for (const repo of ['one', 'two']) {
+    writeClaudeSession(h, { slug: `-work-${repo}`, sessionId: `s-${repo}`, cwd: path.join(h, 'work', repo), start: '2026-10-02T10:00:00.000Z', records: ['hello there'] });
+  }
+  const saved = process.env.AGENT_COACH_HOME;
+  process.env.AGENT_COACH_HOME = tmpCoachHome();
+  let d;
+  try {
+    d = await buildDigest({ home: h, sinceDays, nowMs, sources: ['claude'] });
+  } finally {
+    process.env.AGENT_COACH_HOME = saved;
+  }
+  assert.equal(d.standards.filter((a) => a.path === one || a.path === two).length, 1);
+  assert.equal(d.findings.some((f) => f.type === 'overlapping_assets' && mentions(f, '/fmt/SKILL.md')), false);
 });

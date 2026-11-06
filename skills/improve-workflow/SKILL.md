@@ -18,8 +18,15 @@ Propose first; write nothing until the user selects changes.
    `revise` proposal for the same target that changes it differently. Cite before → after and the samples.
    Mention each `improved` row in one line.
 4. Pick the top 10 findings or fewer.
+   - Discard noise first: findings whose examples are not prompts the user typed (pasted logs, agent or
+     teammate messages, one-off chat).
    - Merge findings that mean the same thing; for example, a `follow_up` and a `repeated_prompt` for
      "shorter version" become one proposal.
+   - After discarding and merging, keep filling up to 10 proposals from the remaining sections in digest
+     order: costly assets, memory promotion, skill standards, overlapping assets, unused assets. Stop early
+     only when no findings are left.
+   - The markdown shows only part of a long digest (it ends with "N findings omitted"). For findings beyond
+     it, call `usage_digest` with `format: json` or `finding_examples` with the finding id.
    - Call `finding_examples` whenever 3 examples do not make the intent clear.
    - Read each target file before proposing a change to it.
    - Build each change by following `references/change-recipes.md`.

@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { makeHome } from './_helpers.mjs';
+import { makeHome, tmpCoachHome, writeAsset, writeClaudeSession } from './_helpers.mjs';
 
 const CLI = fileURLToPath(new URL('../bin/agent-coach', import.meta.url));
 const SERVER = fileURLToPath(new URL('../server.mjs', import.meta.url));
@@ -139,4 +139,24 @@ test('dashboard without --no-open honours AGENT_COACH_NO_OPEN=1 and says "not op
   const r = cli(home, coachDir, 'dashboard', '--days', '400');
   assert.equal(r.code, 0, r.stderr);
   assert.equal(r.stdout.trim().split('\n')[0], `Dashboard: ${path.join(coachDir, 'dashboard.html')} (not opened)`);
+});
+
+// ---- COACH1 review: assets lists the project assets of the last digest ----
+
+test('COACH1-R3 assets lists project assets from the cwds of the last digest', () => {
+  const home = tmpCoachHome();
+  const coachDir = tmpCoachHome();
+  const repo = path.join(home, 'work', 'repo');
+  const skill = writeAsset(repo, '.claude/skills/repo-skill/SKILL.md', { name: 'repo-skill', description: 'Repo-only skill' });
+  writeClaudeSession(home, { slug: '-work-repo', sessionId: 'cli-1', cwd: repo, start: '2026-10-02T10:00:00.000Z', records: ['hello there'] });
+  const before = cli(home, coachDir, 'assets', '--kind', 'skill');
+  assert.equal(before.code, 0, before.stderr);
+  assert.equal(before.stdout.includes(skill), false, 'project skill listed before any digest');
+  const d = cli(home, coachDir, 'digest', '--source', 'claude');
+  assert.equal(d.code, 0, d.stderr);
+  const after = cli(home, coachDir, 'assets', '--kind', 'skill');
+  assert.equal(after.code, 0, after.stderr);
+  const line = after.stdout.split('\n').find((l) => l.endsWith(`\t${skill}`));
+  assert.ok(line, `project skill missing:\n${after.stdout}`);
+  assert.match(line, /^skill\trepo-skill\tproject\teditable\t/);
 });
