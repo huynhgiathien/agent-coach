@@ -97,8 +97,9 @@ const TOOLS = [
     },
     run: async ({ kind }) => {
       const home = os.homedir();
-      const assets = (await listAssets({ home })).filter((a) => !kind || a.kind === kind);
-      return formatAssets(assets, await readLastDigest(home));
+      const last = await readLastDigest(home);
+      const assets = (await listAssets({ home, projectDirs: last?.projectDirs })).filter((a) => !kind || a.kind === kind);
+      return formatAssets(assets, last);
     },
   },
   {
@@ -151,7 +152,7 @@ async function handle({ id, method, params }) {
       return {
         protocolVersion: params?.protocolVersion ?? '2025-06-18',
         capabilities: { tools: {} },
-        serverInfo: { name: 'agent-coach', version: '0.1.0' },
+        serverInfo: { name: 'agent-coach', version: '0.1.1' },
       };
     case 'ping':
       return {};

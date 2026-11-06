@@ -7,7 +7,8 @@ and finds:
 - prompts you type again and again;
 - corrections you keep making after a skill, agent, mode or command (for example "shorter version"
   right after the `linear-comment` skill);
-- unused or overlapping skills, agents, commands and memories;
+- unused or overlapping skills, agents, commands and memories (unused: no use in the window and not
+  modified in the last 30 days);
 - costly skills and agents, with their prompt-cache hit rates;
 - memories that should become a skill step or an AGENTS.md/CLAUDE.md rule;
 - skills, agents and commands that fail the skill standards (see [Standards](#standards));
@@ -21,6 +22,7 @@ network access.
 
 - MCP tools:
   - `usage_digest`: the analysis as markdown (at most 40 000 characters) or JSON. Every finding has an id.
+    The best finding of each type is ranked first, so every finding type survives the markdown limit.
     Pass `name` (for example `linear-comment`) to list only the findings whose trigger or target has that
     name; the stored digest stays complete, so `finding_examples` works for any id.
   - `usage_dashboard`: the same analysis written as one self-contained HTML file and opened in your
@@ -140,6 +142,9 @@ Everything is read-only, except the plugin's own state in `~/.agent-coach`.
 - **Claude Code sessions**: `~/.claude/projects/<project>/*.jsonl` and
   `<project>/<session>/subagents/agent-*.jsonl` with their `.meta.json`. Typed prompts, slash commands,
   queued prompts, `Skill` and `Agent` tool calls, token usage, and the session's `cost-state` record.
+  Teammate messages (`<teammate-message`), sidechain records and compaction summaries are not counted as
+  prompts. A slash-invoked skill counts as one skill use, not also as a command; `plugin:name` skills and
+  agents count toward the asset named `name`.
   Claude Code records cost per session and model only, so per-message cost is allocated from that total
   by token price ratios (input 1, output 5, cache read 0.1, cache write 1.25). Session totals are exact;
   skill and agent costs are proportional estimates. Subagent transcripts have no cost record, so their
@@ -164,6 +169,24 @@ Everything is read-only, except the plugin's own state in `~/.agent-coach`.
 - **Agents and commands**: `~/.claude/agents/*.md`, `~/.omp/agent/agents/*.md`, `~/.cursor/agents/*.md`,
   `~/.claude/commands/**/*.md`, `~/.omp/agent/commands/*.md`, `~/.codex/prompts/*.md`,
   `~/.cursor/commands/*.md`.
+- **Project assets** (origin `project`, editable): for every session `cwd` in the window, that directory and
+  each parent up to your home directory (not included), or up to the filesystem root (`/` not included)
+  for directories outside your home: `.claude/skills/*/SKILL.md`, `.claude/agents/*.md`,
+  `.claude/commands/**/*.md` and `.agents/skills/*/SKILL.md`. A file reached through several paths
+  (symlinks, `/tmp` vs `/private/tmp`) is listed once by its real path. Byte-identical copies with the same
+  kind and name in several clones or worktrees count as one asset in the digest (the copy most used from
+  its own project, else the newest), so they never show up as overlapping; copies whose content differs
+  are still reported as overlapping. Unused, standards and overlap findings about project assets are
+  identified by the repository and the file's path inside it (for example `github.com/org/app` +
+  `.claude/skills/create-pr/SKILL.md`). The repository is the normalized `remote.origin.url` (https and ssh
+  URLs are equal; worktrees resolve to their main repository; a local origin such as `../upstream.git` is
+  resolved against the main worktree), else the main worktree's path (a bare repository's own path) when
+  there is no remote, else the project directory outside git; it is read from the git files, never by
+  running git.
+  So one finding covers that file in every clone and worktree of a repository, lists the other copies, and
+  stays dismissed after edits or when worktrees come and go, while the same path in another repository is
+  a separate finding. Findings about home-level assets are identified by their absolute path.
+  `list_assets` uses the directories of the last digest.
 - **Context files**: `~/.claude/CLAUDE.md`, `~/.omp/agent/AGENTS.md`, `~/.codex/AGENTS.md`,
   `~/.cursor/rules/*.mdc`.
 - **Memories**: Claude Code project memories in `~/.claude/projects/<project>/memory/*.md` (the

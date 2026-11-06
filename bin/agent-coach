@@ -125,8 +125,9 @@ try {
   } else if (command === 'install-cursor-mcp') {
     installCursorMcp();
   } else if (command === 'assets') {
-    const assets = (await listAssets({ home })).filter((a) => !opts.kind || a.kind === opts.kind);
-    console.log(formatAssets(assets, await readLastDigest(home)));
+    const last = await readLastDigest(home);
+    const assets = (await listAssets({ home, projectDirs: last?.projectDirs })).filter((a) => !opts.kind || a.kind === opts.kind);
+    console.log(formatAssets(assets, last));
   } else if (command === 'examples') {
     console.log(formatExamples(await readLastDigest(home), args[0], count(opts.limit, 'limit')));
   } else {

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readEvents as readOmp } from '../lib/sources/omp.mjs';
 import { readEvents as readClaude } from '../lib/sources/claude.mjs';
 import { readEvents as readCodex } from '../lib/sources/codex.mjs';
-import { makeHome, SINCE_MS as sinceMs, SECRET, mentions } from './_helpers.mjs';
+import { makeHome, SINCE_MS as sinceMs, SECRET, mentions, tmpCoachHome, writeClaudeSession } from './_helpers.mjs';
 
 const { home } = makeHome();
 const [ompResult, claudeResult, codexResult] = await Promise.all([readOmp, readClaude, readCodex].map((read) => read({ home, sinceMs })));
@@ -140,4 +140,42 @@ test('codex: interactive session yields one deduped prompt and skill foo', () =>
   assert.deepEqual(of(a, 'skill').map((e) => `${e.name}/${e.how}`), ['foo/model']);
   assert.equal(a[0].cwd, '/proj');
   assert.equal(of(a, 'usage').length, 0);
+});
+
+// ---- COACH1: injected records and plugin-qualified skills ----
+
+test('COACH1-S1 claude: teammate pings, sidechain and compact-summary records are not prompts', async () => {
+  const h = tmpCoachHome();
+  writeClaudeSession(h, {
+    sessionId: 'claude-team',
+    cwd: '/proj',
+    start: '2026-10-10T10:00:00.000Z',
+    records: [
+      'real typed prompt',
+      '<teammate-message teammate_id="lead">TEAMMATE_PING_TEXT</teammate-message>',
+      '  \n<teammate-message teammate_id="lead" color="blue">TEAMMATE_INDENTED_TEXT</teammate-message>',
+      { text: 'SIDECHAIN_TEXT', isSidechain: true },
+      { text: 'COMPACT_SUMMARY_TEXT', isCompactSummary: true },
+      'second typed prompt',
+    ],
+  });
+  const { events } = await readClaude({ home: h, sinceMs });
+  assert.deepEqual(of(events, 'prompt').map((e) => e.text), ['real typed prompt', 'second typed prompt']);
+  for (const marker of ['TEAMMATE_PING_TEXT', 'TEAMMATE_INDENTED_TEXT', 'SIDECHAIN_TEXT', 'COMPACT_SUMMARY_TEXT']) {
+    assert.equal(mentions(events, marker), false, `${marker} leaked into claude events`);
+  }
+});
+
+test('COACH1-S7 claude: a model-invoked plugin:skill Skill call is one skill event, not two', async () => {
+  const h = tmpCoachHome();
+  writeClaudeSession(h, {
+    sessionId: 'claude-plug',
+    cwd: '/proj',
+    start: '2026-10-10T10:00:00.000Z',
+    records: ['write the release notes', { skill: 'myplug:notes' }, { meta: 'Base directory for this skill: /x/.claude/plugins/cache/m/myplug/1.0.0/skills/notes\n\nNOTES_BODY' }],
+  });
+  const skills = of((await readClaude({ home: h, sinceMs })).events, 'skill');
+  assert.equal(skills.length, 1, `skill events: ${JSON.stringify(skills.map((e) => `${e.name}/${e.how}`))}`);
+  assert.equal(skills[0].name.split(':').pop(), 'notes');
+  assert.equal(skills[0].how, 'model');
 });
