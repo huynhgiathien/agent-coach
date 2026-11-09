@@ -1,12 +1,13 @@
 ---
 name: improve-workflow
-description: Turn my Claude Code, Codex, Cursor and omp history into concrete changes — update a skill/agent when I keep correcting its output, it costs too much, or it fails the skill standards; create a skill or command for prompts I repeat; add standing rules; promote recurring memories; merge overlapping and delete unused skills/agents/memories. Proposes diffs and lets me pick which to apply. Use when the user asks to improve their workflow, skills, agents, memories, cost, plan or prompts. Not for usage stats alone; use usage-report.
-argument-hint: "[days] [skill-or-agent name]"
+description: Turn my Claude Code, Codex, Cursor and omp history into concrete changes — update a skill/agent when I keep correcting its output, it costs too much, or it fails the skill standards; create a skill or command for prompts I repeat; add standing rules; promote recurring memories; merge overlapping and delete unused skills/agents/memories; route repo skills in a multi-repo workspace. Proposes diffs and lets me pick which to apply. Use when the user asks to improve their workflow, skills, agents, memories, cost, plan or prompts. Not for usage stats alone; use usage-report.
+argument-hint: "[days] [skill-or-agent name] [workspace <path>]"
 ---
 
 # Improve my agent workflow
 
-Use the plugin's MCP tools `usage_digest`, `finding_examples`, `check_asset` and `record_decision`.
+Use the plugin's MCP tools `usage_digest`, `workspace_scan`, `finding_examples`, `check_asset` and
+`record_decision`.
 Propose first; write nothing until the user selects changes.
 
 1. Read `references/asking.md` now; every question in this skill follows it. Read
@@ -14,6 +15,11 @@ Propose first; write nothing until the user selects changes.
 2. Call `usage_digest` with `since_days` set to the first argument (default 90). If a skill, agent or
    command name is given, also pass it as `name`; the digest then lists only the findings whose trigger or
    target has that name. Keep only the impact rows whose title contains that name.
+2b. Workspace. If the current folder has 2 or more child dirs that contain `.git`, or the arguments contain
+   `workspace <path>`, call `workspace_scan` with that path (else the current folder) and the same
+   `since_days`. Add its findings to the pool for step 4 with change type `workspace`. Build them with the
+   Workspace section of `references/change-recipes.md`: workspace-level skills are edited after the user
+   picks them; repo-level skills are only shown as patches.
 3. Impact first. For each `## Impact of accepted changes` row with verdict `worse` or `no_change`, add a
    `revise` proposal for the same target that changes it differently. Cite before → after and the samples.
    Mention each `improved` row in one line.
@@ -31,7 +37,7 @@ Propose first; write nothing until the user selects changes.
    - Read each target file before proposing a change to it.
    - Build each change by following `references/change-recipes.md`.
 5. Show the proposals as a numbered markdown list. Each item has:
-   - the change type: `update`, `create`, `rule`, `promote`, `merge`, `delete` or `revise`;
+   - the change type: `update`, `create`, `rule`, `promote`, `merge`, `delete`, `revise` or `workspace`;
    - the absolute path of every file it edits or creates (expand `~`, for example
      `/Users/<you>/.claude/skills/linear-comment/SKILL.md`);
    - the exact absolute `.trash` destination of every file it moves, including each memory file moved by a
@@ -57,6 +63,8 @@ Propose first; write nothing until the user selects changes.
 
 - Never edit read-only assets (`editable: false`: plugin caches, `skills/synced`, `.codex/skills/.system`,
   `.cursor/skills-cursor`). For those, show the proposed change against the plugin's source repository instead.
+- Never write a file inside a repo of a workspace (`editable: false` in `workspace_scan`); show a patch for
+  its main checkout instead. Never touch worktree copies.
 - Never delete outright; move to `.trash`.
 - Never read raw session logs or Cursor's database. The digest and examples are already redacted.
 - Never print secrets.

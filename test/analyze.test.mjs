@@ -199,8 +199,8 @@ test('costBasis labels each source: omp recorded, claude allocated, codex and cu
 
 // ---- totals / activity (S15, S17) ----
 
-test('totals: omp has 6 main sessions with 14 typed prompts; subagent files are not sessions', () => {
-  assert.deepEqual(run().totals.omp, { sessions: 6, prompts: 14 });
+test('totals: omp has 10 main sessions with 18 typed prompts (s1–s6 + workspace w1–w4); subagent files are not sessions', () => {
+  assert.deepEqual(run().totals.omp, { sessions: 10, prompts: 18 });
 });
 
 test('totals: cursor counts the main composer only (k2 is a subagent, k3 a draft)', { skip: noSqlite }, () => {

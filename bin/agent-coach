@@ -8,6 +8,7 @@
 //   agent-coach assets --kind skill
 //   agent-coach examples 1a2b3c4d5e --limit 5
 //   agent-coach decide 1a2b3c4d5e dismissed --note "not useful"
+//   agent-coach workspace ~/code --days 30
 //   agent-coach install-cursor-mcp
 
 import fs from 'node:fs';
@@ -19,7 +20,8 @@ import { publishDashboard } from '../lib/dashboard.mjs';
 import { SOURCES, buildDigest, digestJson, filterDigest, formatAssets, formatExamples, renderMarkdown } from '../lib/digest.mjs';
 import { listAssets } from '../lib/inventory.mjs';
 import { auditFile, formatAudit } from '../lib/standards.mjs';
-import { readLastDigest, recordDecision } from '../lib/state.mjs';
+import { readLastDigest, readLastWorkspace, recordDecision } from '../lib/state.mjs';
+import { renderWorkspace, scanWorkspace, workspaceJson } from '../lib/workspace.mjs';
 
 const usage =
   'usage: agent-coach digest [--days N] [--source omp,claude,codex,cursor] [--min-count N] [--name skill-or-agent] [--all] [--json]\n' +
@@ -28,9 +30,11 @@ const usage =
   '       agent-coach assets [--kind skill|agent|command|context|memory]\n' +
   '       agent-coach examples <finding-id> [--limit N]\n' +
   '       agent-coach decide <finding-id> accepted|dismissed [--note text]\n' +
+  '       agent-coach workspace [path] [--days N] [--min-count N] [--json]\n' +
   '       agent-coach install-cursor-mcp';
 
-const ARITY = { digest: 0, dashboard: 0, check: 1, assets: 0, examples: 1, decide: 2, 'install-cursor-mcp': 0 };
+// Allowed positional argument counts per command.
+const ARITY = { digest: [0], dashboard: [0], check: [1], assets: [0], examples: [1], decide: [2], workspace: [0, 1], 'install-cursor-mcp': [0] };
 
 function count(value, flag) {
   const n = Number(value);
@@ -110,7 +114,7 @@ try {
     });
   if (opts.help) {
     console.log(usage);
-  } else if (!Object.hasOwn(ARITY, command ?? '') || args.length !== ARITY[command]) {
+  } else if (!Object.hasOwn(ARITY, command ?? '') || !ARITY[command].includes(args.length)) {
     console.error(usage);
     process.exitCode = 1;
   } else if (command === 'digest') {
@@ -129,7 +133,16 @@ try {
     const assets = (await listAssets({ home, projectDirs: last?.projectDirs })).filter((a) => !opts.kind || a.kind === opts.kind);
     console.log(formatAssets(assets, last));
   } else if (command === 'examples') {
-    console.log(formatExamples(await readLastDigest(home), args[0], count(opts.limit, 'limit')));
+    const [digest, workspace] = await Promise.all([readLastDigest(home), readLastWorkspace(home)]);
+    console.log(formatExamples(digest, args[0], count(opts.limit, 'limit'), workspace));
+  } else if (command === 'workspace') {
+    const scan = await scanWorkspace({
+      home,
+      path: args[0] ?? process.cwd(),
+      sinceDays: count(opts.days, 'days'),
+      minCount: count(opts['min-count'], 'min-count'),
+    });
+    process.stdout.write(opts.json ? `${workspaceJson(scan)}\n` : renderWorkspace(scan));
   } else {
     const [id, status] = args;
     console.log(await recordDecision(home, { id, status, note: opts.note }));

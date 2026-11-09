@@ -1,4 +1,4 @@
-// S9, S17, S18: stdio MCP server speaks newline-delimited JSON-RPC and exposes the six tools.
+// S9, S17, S18, W1, W7: stdio MCP server speaks newline-delimited JSON-RPC and exposes the seven tools.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { REPO, makeHome } from './_helpers.mjs';
 
 const SERVER = fileURLToPath(new URL('../server.mjs', import.meta.url));
-const { home, coachDir: coachHome } = makeHome();
+const { home, coachDir: coachHome, ws } = makeHome();
 let child;
 let nextId = 1;
 const pending = new Map();
@@ -26,7 +26,12 @@ function rpc(method, params) {
     child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
   });
 }
-const callTool = (name, args) => rpc('tools/call', { name, arguments: args });
+/** tools/call; a JSON-RPC error (e.g. unknown tool) throws with its message instead of yielding `{ error }`. */
+async function callTool(name, args) {
+  const msg = await rpc('tools/call', { name, arguments: args });
+  if (msg.error) throw new Error(`tools/call ${name}: ${msg.error.message}`);
+  return msg;
+}
 
 before(async () => {
   child = spawn(process.execPath, [SERVER], {
@@ -50,12 +55,20 @@ before(async () => {
 
 after(() => child?.kill());
 
-test('tools/list returns the six tools', async () => {
+test('tools/list returns the seven tools, including workspace_scan', async () => {
   const { result } = await rpc('tools/list');
   assert.deepEqual(
     result.tools.map((t) => t.name).sort(),
-    ['check_asset', 'finding_examples', 'list_assets', 'record_decision', 'usage_dashboard', 'usage_digest'],
+    ['check_asset', 'finding_examples', 'list_assets', 'record_decision', 'usage_dashboard', 'usage_digest', 'workspace_scan'],
   );
+});
+
+test('tools/list: workspace_scan takes path, since_days, min_count and format; path is required', async () => {
+  const { result } = await rpc('tools/list');
+  const tool = result.tools.find((t) => t.name === 'workspace_scan');
+  assert.ok(tool, 'workspace_scan missing');
+  assert.deepEqual(Object.keys(tool.inputSchema.properties).sort(), ['format', 'min_count', 'path', 'since_days']);
+  assert.deepEqual(tool.inputSchema.required, ['path']);
 });
 
 test('tools/list: only usage_dashboard and record_decision may write; none touch the network', async () => {
@@ -134,4 +147,79 @@ test('usage_dashboard with open omitted honours AGENT_COACH_NO_OPEN=1 and says "
   const { result } = await callTool('usage_dashboard', { since_days: 400 });
   assert.notEqual(result.isError, true, result.content?.[0]?.text);
   assert.match(result.content[0].text.split('\n')[0], /^Dashboard: .*dashboard\.html \(not opened\)$/);
+});
+
+// ---- W1, W7: workspace_scan ----
+
+const SECTIONS = ['## Repos', '## Router coverage', '## Missed repo skills', '## Name collisions', '## Invalid layout'];
+
+test('workspace_scan markdown has ## Repos, then Router coverage, Missed repo skills, Name collisions, Invalid layout', async () => {
+  const { result } = await callTool('workspace_scan', { path: ws, since_days: 400 });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const md = result.content[0].text;
+  const at = SECTIONS.map((s) => md.indexOf(s));
+  assert.ok(at.every((i) => i >= 0), `missing section: ${SECTIONS.filter((_, i) => at[i] < 0)}`);
+  assert.deepEqual([...at].sort((a, b) => a - b), at, 'sections out of order');
+  assert.ok(md.length <= 40_000);
+  assert.equal(md.includes('wt-only'), false);
+});
+
+test('workspace_scan: the Repos table has the columns group, members, skills, context, routers', async () => {
+  const { result } = await callTool('workspace_scan', { path: ws, since_days: 400 });
+  const md = result.content[0].text;
+  const repos = md.slice(md.indexOf('## Repos'), md.indexOf('## Router coverage'));
+  assert.match(repos, /\| group \| members \| skills \| context \| routers \|/);
+  assert.match(repos, /\| repoA \|/);
+  assert.match(repos, /\| repoB \|/);
+});
+
+test('workspace_scan: each finding section renders its findings with [id] like the digest', async () => {
+  const { result } = await callTool('workspace_scan', { path: ws, since_days: 400 });
+  const md = result.content[0].text;
+  const section = (name) => {
+    const start = md.indexOf(name);
+    const next = SECTIONS.map((s) => md.indexOf(s)).filter((i) => i > start).sort((a, b) => a - b)[0] ?? md.length;
+    return md.slice(start, next);
+  };
+  assert.match(section('## Router coverage'), /### \[[0-9a-f]{10}\] /);
+  assert.match(section('## Missed repo skills'), /### \[[0-9a-f]{10}\] .*repoB/);
+  assert.match(section('## Name collisions'), /### \[[0-9a-f]{10}\] .*create-pr/);
+  assert.match(section('## Invalid layout'), /### \[[0-9a-f]{10}\] .*repoB/);
+});
+
+test('workspace_scan format json returns the findings, including missed_repo_skill for repoB', async () => {
+  const { result } = await callTool('workspace_scan', { path: ws, since_days: 400, format: 'json' });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const data = JSON.parse(result.content[0].text);
+  const missed = data.findings.filter((f) => f.type === 'missed_repo_skill');
+  assert.equal(missed.length, 1);
+  assert.deepEqual([missed[0].count, missed[0].triggerCount, missed[0].rate], [3, 3, 1]);
+});
+
+test('workspace_scan on a folder without git repos is a tool error naming the count', async () => {
+  const notes = path.join(ws, 'notes');
+  const { result } = await callTool('workspace_scan', { path: notes });
+  assert.equal(result.isError, true);
+  assert.equal(result.content[0].text, `Not a workspace: ${notes} has 0 git repos (needs 2+)`);
+});
+
+test('finding_examples and record_decision resolve an id found only in last-workspace.json', async () => {
+  const { result } = await callTool('workspace_scan', { path: ws, since_days: 400, format: 'json' });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const f = JSON.parse(result.content[0].text).findings.find((x) => x.type === 'missed_repo_skill');
+  assert.ok(f, 'missed_repo_skill missing');
+  const stored = JSON.parse(fs.readFileSync(path.join(coachHome, 'last-digest.json'), 'utf8'));
+  assert.equal(stored.findings.some((x) => x.id === f.id), false, 'id unexpectedly in last-digest.json');
+
+  const ex = await callTool('finding_examples', { finding_id: f.id });
+  assert.notEqual(ex.result.isError, true, ex.result.content?.[0]?.text);
+  assert.ok(ex.result.content[0].text.includes('fix the build error in the B service'), ex.result.content[0].text);
+
+  const rec = await callTool('record_decision', { finding_id: f.id, status: 'dismissed' });
+  assert.notEqual(rec.result.isError, true, rec.result.content?.[0]?.text);
+  const decision = JSON.parse(fs.readFileSync(path.join(coachHome, 'decisions.json'), 'utf8')).decisions[f.id];
+  assert.equal(decision.snapshot?.type, 'missed_repo_skill');
+
+  const next = await callTool('workspace_scan', { path: ws, since_days: 400, format: 'json' });
+  assert.equal(JSON.parse(next.result.content[0].text).findings.some((x) => x.id === f.id), false, 'dismissed finding reappeared');
 });

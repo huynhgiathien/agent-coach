@@ -1,12 +1,14 @@
 // S1, S2, S5: session readers emit typed prompts, skill/agent use and token usage.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import { readEvents as readOmp } from '../lib/sources/omp.mjs';
 import { readEvents as readClaude } from '../lib/sources/claude.mjs';
 import { readEvents as readCodex } from '../lib/sources/codex.mjs';
 import { makeHome, SINCE_MS as sinceMs, SECRET, mentions, tmpCoachHome, writeClaudeSession } from './_helpers.mjs';
 
-const { home } = makeHome();
+const { home, ws } = makeHome();
 const [ompResult, claudeResult, codexResult] = await Promise.all([readOmp, readClaude, readCodex].map((read) => read({ home, sinceMs })));
 const { events: omp } = ompResult;
 const { events: claude } = claudeResult;
@@ -178,4 +180,143 @@ test('COACH1-S7 claude: a model-invoked plugin:skill Skill call is one skill eve
   assert.equal(skills.length, 1, `skill events: ${JSON.stringify(skills.map((e) => `${e.name}/${e.how}`))}`);
   assert.equal(skills[0].name.split(':').pop(), 'notes');
   assert.equal(skills[0].how, 'model');
+});
+
+// ---- W6: touch events and parentSessionId (workspace skill routing) ----
+
+test('omp W6: an edit toolCall emits a touch event with arguments.path', () => {
+  for (const id of ['omp-w1', 'omp-w2', 'omp-w3']) {
+    const touches = of(omp, 'touch', (e) => e.sessionId === id);
+    assert.deepEqual(touches.map((e) => e.path), [path.join(ws, 'repoB/src/x.ts')], id);
+    assert.equal(touches[0].source, 'omp');
+    assert.equal(touches[0].cwd, ws);
+    assert.equal(touches[0].ts, Date.parse(`2026-10-1${id.at(-1)}T10:00:30.000Z`));
+  }
+});
+
+test('omp W6: a skill:// read emits the skill event and no touch; the edit in the same message is a touch', () => {
+  const w4 = omp.filter((e) => e.sessionId === 'omp-w4');
+  assert.deepEqual(of(w4, 'touch').map((e) => e.path), [path.join(ws, 'repoA/x.ts')]);
+  assert.deepEqual(of(w4, 'skill').map((e) => `${e.name}/${e.how}`), ['repo-repoa/model']);
+  assert.equal(of(omp, 'touch', (e) => /^[a-z][a-z0-9+.-]*:\/\//i.test(e.path)).length, 0, 'scheme:// path emitted as touch');
+});
+
+test('omp W6: a subagent read of a file path is a touch tagged sub', () => {
+  const [t, ...rest] = of(omp, 'touch', (e) => e.sessionId === 'omp-s1-scout');
+  assert.equal(rest?.length, 0);
+  assert.equal(t?.path, '/x/.claude/skills/automation-testing/SKILL.md');
+  assert.equal(t?.sub, true);
+});
+
+test('omp W6: subagent events carry parentSessionId of their main session; main events do not', () => {
+  const scout = omp.filter((e) => e.sessionId === 'omp-s1-scout');
+  assert.ok(scout.length > 0);
+  for (const e of scout) assert.equal(e.parentSessionId, 'omp-s1', `${e.kind}`);
+  const s2subs = omp.filter((e) => /^omp-s2-(scout|sonic)-/.test(e.sessionId));
+  assert.ok(s2subs.length > 0);
+  for (const e of s2subs) assert.equal(e.parentSessionId, 'omp-s2', e.sessionId);
+  assert.equal(omp.filter((e) => !e.sub && e.parentSessionId !== undefined).length, 0);
+});
+
+test('omp W6: a nested subagent (<main>/Scout/Scout.Deep.jsonl) resolves parentSessionId to the top main session', async () => {
+  const { home: h } = makeHome();
+  const mainDir = path.join(h, '.omp/agent/sessions/-proj/2026-10-01T10-00-00-000Z_omp-s1');
+  const parentFile = path.join(mainDir, 'Scout.jsonl');
+  fs.mkdirSync(path.join(mainDir, 'Scout'), { recursive: true });
+  const lines = [
+    { type: 'session', version: 3, id: 'omp-s1-deep', timestamp: '2026-10-01T12:05:00.000Z', cwd: '/proj', parentSession: parentFile },
+    {
+      type: 'message',
+      message: { role: 'assistant', content: [{ type: 'toolCall', id: 'd1', name: 'read', arguments: { path: '/proj/deep.ts' } }], stopReason: 'toolUse' },
+      id: 'd-1', parentId: null, timestamp: '2026-10-01T12:05:10.000Z',
+    },
+  ];
+  fs.writeFileSync(path.join(mainDir, 'Scout/Scout.Deep.jsonl'), `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+  const { events } = await readOmp({ home: h, sinceMs });
+  const deep = events.filter((e) => e.sessionId === 'omp-s1-deep');
+  assert.deepEqual(deep.map((e) => [e.kind, e.path, e.sub, e.parentSessionId]), [['touch', '/proj/deep.ts', true, 'omp-s1']]);
+});
+
+test('omp W6: an edit without arguments.path yields a touch per [path#TAG] header of its input', async () => {
+  const { home: h } = makeHome();
+  const file = path.join(h, '.omp/agent/sessions/-proj/2026-10-05T10-00-00-000Z_omp-e1.jsonl');
+  const input = '[/proj/a.ts#1A2B]\nPUT 1.=1:\n+x\n[/proj/src/b.ts#3c4d]\nCUT 2\n[skill://nope#AAAA]\nCUT 1';
+  const lines = [
+    { type: 'session', version: 3, id: 'omp-e1', timestamp: '2026-10-05T10:00:00.000Z', cwd: '/proj' },
+    {
+      type: 'message',
+      message: { role: 'assistant', content: [{ type: 'toolCall', id: 'e1', name: 'edit', arguments: { input } }], stopReason: 'toolUse' },
+      id: 'e-1', parentId: null, timestamp: '2026-10-05T10:00:10.000Z',
+    },
+  ];
+  fs.writeFileSync(file, `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+  const { events } = await readOmp({ home: h, sinceMs });
+  assert.deepEqual(of(events, 'touch', (e) => e.sessionId === 'omp-e1').map((e) => e.path), ['/proj/a.ts', '/proj/src/b.ts']);
+});
+
+test('claude W6: Read/Edit/Write/MultiEdit/NotebookEdit are touches; subagent touches carry parentSessionId', async () => {
+  const { home: h } = makeHome();
+  const dir = path.join(h, '.claude/projects/-proj');
+  const rec = (sessionId, ts, tools) => ({
+    type: 'assistant', sessionId, cwd: '/proj', timestamp: ts,
+    message: { role: 'assistant', content: tools.map(([name, input], i) => ({ type: 'tool_use', id: `t${i}`, name, input })) },
+  });
+  const main = [
+    rec('claude-t1', '2026-10-06T10:00:00.000Z', [
+      ['Read', { file_path: '/proj/a.ts' }],
+      ['Edit', { file_path: '/proj/b.ts', old_string: 'x', new_string: 'y' }],
+      ['Write', { file_path: '/proj/c.ts', content: '' }],
+      ['MultiEdit', { file_path: '/proj/d.ts', edits: [] }],
+      ['NotebookEdit', { notebook_path: '/proj/e.ipynb', new_source: '' }],
+      ['Bash', { command: 'cat /proj/f.ts' }],
+    ]),
+  ];
+  fs.writeFileSync(path.join(dir, 'claude-t1.jsonl'), `${main.map((l) => JSON.stringify(l)).join('\n')}\n`);
+  const subDir = path.join(dir, 'claude-t1/subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  const sub = [rec('claude-t1', '2026-10-06T10:01:00.000Z', [['Read', { file_path: '/proj/g.ts' }]])];
+  fs.writeFileSync(path.join(subDir, 'agent-s1.jsonl'), `${sub.map((l) => JSON.stringify(l)).join('\n')}\n`);
+  const { events } = await readClaude({ home: h, sinceMs });
+  const mainTouches = of(events, 'touch', (e) => e.sessionId === 'claude-t1');
+  assert.deepEqual(mainTouches.map((e) => e.path), ['/proj/a.ts', '/proj/b.ts', '/proj/c.ts', '/proj/d.ts', '/proj/e.ipynb']);
+  assert.ok(mainTouches.every((e) => e.parentSessionId === undefined && !e.sub && e.cwd === '/proj'));
+  const subTouches = of(events, 'touch', (e) => e.sessionId === 'claude-t1:agent-s1');
+  assert.deepEqual(subTouches.map((e) => [e.path, e.sub, e.parentSessionId]), [['/proj/g.ts', true, 'claude-t1']]);
+});
+
+test('W6: `~/` file paths are expanded to the reader home in omp and claude touch and skill events', async () => {
+  const { home: h } = makeHome();
+  const ompFile = path.join(h, '.omp/agent/sessions/-proj/2026-10-07T10-00-00-000Z_omp-h1.jsonl');
+  const ompLines = [
+    { type: 'session', version: 3, id: 'omp-h1', timestamp: '2026-10-07T10:00:00.000Z', cwd: '/proj' },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'toolCall', id: 'h1', name: 'read', arguments: { path: '~/ws/repoB/.claude/skills/b-skill/SKILL.md:raw' } },
+          { type: 'toolCall', id: 'h2', name: 'edit', arguments: { input: '[~/ws/repoB/src/x.ts#1A2B]\nCUT 1' } },
+          { type: 'toolCall', id: 'h3', name: 'write', arguments: { path: '~' } },
+        ],
+        stopReason: 'toolUse',
+      },
+      id: 'h-1', parentId: null, timestamp: '2026-10-07T10:00:10.000Z',
+    },
+  ];
+  fs.writeFileSync(ompFile, `${ompLines.map((l) => JSON.stringify(l)).join('\n')}\n`);
+  const claudeLine = {
+    type: 'assistant', sessionId: 'claude-h1', cwd: '/proj', timestamp: '2026-10-07T10:00:00.000Z',
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: '~/ws/repoB/src/y.ts' } }] },
+  };
+  fs.writeFileSync(path.join(h, '.claude/projects/-proj/claude-h1.jsonl'), `${JSON.stringify(claudeLine)}\n`);
+
+  const omp = (await readOmp({ home: h, sinceMs })).events.filter((e) => e.sessionId === 'omp-h1');
+  assert.deepEqual(of(omp, 'touch').map((e) => e.path), [
+    path.join(h, 'ws/repoB/.claude/skills/b-skill/SKILL.md'),
+    path.join(h, 'ws/repoB/src/x.ts'),
+    h,
+  ]);
+  assert.deepEqual(of(omp, 'skill').map((e) => [e.name, e.path]), [['b-skill', path.join(h, 'ws/repoB/.claude/skills/b-skill/SKILL.md')]]);
+  const claude = (await readClaude({ home: h, sinceMs })).events.filter((e) => e.sessionId === 'claude-h1');
+  assert.deepEqual(of(claude, 'touch').map((e) => e.path), [path.join(h, 'ws/repoB/src/y.ts')]);
 });

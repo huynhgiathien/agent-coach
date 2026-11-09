@@ -20,7 +20,7 @@ network access.
 
 ## What it adds
 
-- MCP tools:
+- Seven MCP tools:
   - `usage_digest`: the analysis as markdown (at most 40 000 characters) or JSON. Every finding has an id.
     The best finding of each type is ranked first, so every finding type survives the markdown limit.
     Pass `name` (for example `linear-comment`) to list only the findings whose trigger or target has that
@@ -28,7 +28,9 @@ network access.
   - `usage_dashboard`: the same analysis written as one self-contained HTML file and opened in your
     browser (see [Dashboard](#dashboard)). Returns the file path and the markdown digest.
   - `list_assets`: skills, agents, commands, context files and memories, with uses and paths.
-  - `finding_examples`: the stored, redacted examples of one finding.
+  - `workspace_scan`: skill routing in one multi-repo workspace folder (see [Workspace](#workspace)), as
+    markdown (at most 40 000 characters) or JSON.
+  - `finding_examples`: the stored, redacted examples of one finding from `usage_digest` or `workspace_scan`.
   - `check_asset`: score one skill, agent or command file against the standards rubric.
   - `record_decision`: mark a finding `accepted` or `dismissed`. Dismissed findings never come back;
     accepted ones come back only if the pattern keeps happening afterwards. Accepting stores a baseline
@@ -40,7 +42,8 @@ network access.
     "clean up my memories". It shows numbered proposals with diffs, asks which to apply through the host's
     native picker (omp `ask`, Claude Code `AskUserQuestion`, Codex `request_user_input`, Cursor
     `ask_question`) or a markdown checklist, applies only the ones you pick, and checks each edited skill
-    with `check_asset`.
+    with `check_asset`. Run in a folder of 2+ git repos (or with `workspace <path>`), it also proposes
+    workspace router fixes; repo-level changes are shown as patches only.
 - The `agent-coach` CLI (`bin/`):
 
   ```sh
@@ -50,6 +53,7 @@ network access.
   agent-coach assets [--kind skill|agent|command|context|memory]
   agent-coach examples <finding-id> [--limit N]
   agent-coach decide <finding-id> accepted|dismissed [--note text]
+  agent-coach workspace [path] [--days N] [--min-count N] [--json]   # path defaults to the current folder
   agent-coach install-cursor-mcp      # register the MCP server in ~/.cursor/mcp.json
   ```
 
@@ -222,6 +226,45 @@ accepted changes, every finding with its examples, all standards scores, memory 
 
 Set `AGENT_COACH_NO_OPEN=1` (or pass `--no-open` / `open: false`) to write it without opening a browser.
 
+## Workspace
+
+`workspace_scan { path, since_days = 90, min_count = 3, format }` and `agent-coach workspace [path]` scan one
+folder whose direct child dirs hold 2 or more git repos. A path with fewer is an error:
+`Not a workspace: <path> has <n> git repos (needs 2+)`.
+
+- **Repos and worktrees.** A child dir with a `.git` dir is a repo. A child dir whose `.git` file says
+  `gitdir: <main>/.git/worktrees/<name>` is grouped with `<main>`. Git is never run. Only the main checkout
+  is read (when the main checkout is outside the folder, the newest worktree is read instead), so skills
+  that exist only in worktree copies are ignored.
+- **Inventory.** Per repo and for the workspace folder itself: `{.claude,.agents,.cursor,.codex,.omp}/skills/<n>/SKILL.md`,
+  flat `.claude/skills/*.md` files and `CLAUDE.md`/`AGENTS.md`; plus your user skills (as in `list_assets`).
+- **Routers.** A workspace skill `<folder>/.claude/skills/repo-<slug>/SKILL.md` is the router of a repo when
+  its description names the repo dir as `./<dir>` or `` `<dir>` `` (any of its worktree dirs counts), or when
+  `<slug>` equals the repo name lowercased with non-alphanumerics removed and no other repo in the folder
+  has that same slug (`OmnicasaWeb` and `omnicasa-web` both give `omnicasaweb`, so neither matches by slug).
+  Mentions in the body do not count, since routers often cite related repos there. A repo can have several
+  routers. Paths are resolved to their physical form first, so a symlinked folder groups worktrees correctly.
+- **Findings.** `router_missing` (a repo with skills or a context file and no router; the target is the
+  proposed router: `repo-<slug>`, or `repo-<kebab-case dir>` with `-2`, `-3`, … when `repo-<slug>` exists or
+  another repo shares the slug; it never points at an existing file), `router_stale` (a router that does
+  not name some of the repo's skills),
+  `name_collision` (one skill name in 2+ of: user, workspace, each repo), `invalid_layout` (flat `.md` files
+  that never load as skills; editable only at the workspace level) and `missed_repo_skill`: sessions, started
+  from any folder, that read or edited files in a repo of the workspace, at least `min_count` of them, where
+  half or more never loaded that repo's router or one of its skills (reading a `SKILL.md` file counts only
+  when the file is inside that repo, not a user or workspace copy of the same name). A session started
+  inside a repo's checkout is not counted for that repo, whose skills load there natively, but counts for
+  other repos it touches. `outside` is the number of missed sessions started outside the workspace folder;
+  when it is above 0 the hint is `add_rule`, because only a rule in the user context file reaches those
+  sessions. Sessions come from omp, Claude Code and Cursor; subagent activity counts toward its main session.
+  Codex records no file paths and is skipped.
+- **State.** Findings go to `~/.agent-coach/last-workspace.json`, so `finding_examples` and
+  `record_decision` accept their ids. Dismissed findings never come back; accepted ones are dropped, except a
+  `missed_repo_skill`, which comes back once `min_count` more sessions miss the repo after the decision.
+
+Nothing inside the workspace is written. `improve-workflow` edits workspace-level skills after you pick
+them, and shows repo-level changes as patches with a suggested `chore/skills-<repo>` branch.
+
 ## Standards
 
 The skill standards come from the
@@ -279,6 +322,16 @@ Node v23.11.0, no cache, against this history:
 
 Peak memory was 455 MB (`/usr/bin/time -l`). Per reader in the same window: omp 10.5 s (173 609 events),
 Claude 0.12 s, Codex 5 ms, Cursor 71 ms. The markdown digest was 38 642 characters and the dashboard 191 KB.
+
+`agent-coach workspace ~/omnicasaapp --days 90` on the same machine on 2026-11-09 (470 dirs: 331 git
+checkouts in 31 repo groups, 28 workspace skills; reading omp sessions takes most of the time, as above):
+
+| run | wall | user | sys |
+|---|---|---|---|
+| `workspace <path> --days 90` (3 runs) | 12.8–16.1 s | 10.6–10.8 s | 3.6–4.1 s |
+
+Peak memory was 713 MB. The markdown output was 39 177 characters with 61 findings.
+
 These numbers hold only for this machine and this history; time your own run before relying on them.
 
 ## Privacy
@@ -286,9 +339,11 @@ These numbers hold only for this machine and this history; time your own run bef
 Agent Coach runs locally and makes no network requests. Prompt text is redacted before it is stored or
 shown: API keys, GitHub/Slack/AWS tokens, JWTs, bearer tokens, `password=…`-style values, plain-language
 passwords, and long hex or base64 strings become `[REDACTED]`. Cursor's `ItemTable`, which holds its auth
-tokens, is never read. Its state lives in `~/.agent-coach` (`decisions.json`, `last-digest.json` and
-`dashboard.html`); set `AGENT_COACH_HOME` to move it, and delete the directory to reset it. There is no
-telemetry.
+tokens, is never read. Its state lives in `~/.agent-coach` (`decisions.json`, `last-digest.json`,
+`last-workspace.json` and `dashboard.html`); set `AGENT_COACH_HOME` to move it, and delete the directory to
+reset it. There is no telemetry. A workspace scan reads only the folder's direct child dirs and the skill,
+context and `.git` paths named in [Workspace](#workspace); it never writes inside the folder and never runs
+git.
 
 ## Troubleshooting
 
