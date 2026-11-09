@@ -210,3 +210,47 @@ test('own skill improve-workflow: references/asking.md and change-recipes.md exi
   const audit = await auditFile(path.join(dir, 'SKILL.md'));
   assert.equal(audit.failed.some((f) => f.id === 'links'), false, JSON.stringify(audit.failed));
 });
+
+// ---- W8: improve-workflow workspace step and change recipes ----
+
+const IW = path.join(REPO, 'skills/improve-workflow');
+const readIW = (rel) => fs.readFileSync(path.join(IW, rel), 'utf8');
+
+test('W8 guard: improve-workflow SKILL.md keeps 0 major failures and change-recipes.md stays referenced', async () => {
+  const audit = await auditFile(path.join(IW, 'SKILL.md'));
+  assert.deepEqual(majors(audit), []);
+  assert.equal(audit.failed.some((f) => f.id === 'links'), false, JSON.stringify(audit.failed));
+});
+
+test('W8 guard: every relative markdown link in references/change-recipes.md resolves', () => {
+  const text = readIW('references/change-recipes.md').replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+  const links = [...text.matchAll(/\]\(([^)#\s]+)(?:#[^)]*)?\)/g)].map((m) => m[1]).filter((l) => !/^[a-z]+:/i.test(l));
+  for (const l of links) assert.ok(fs.existsSync(path.join(IW, 'references', l)), `broken link ${l}`);
+});
+
+test('W8: improve-workflow SKILL.md has the workspace step: 2+ git repos or "workspace <path>" → workspace_scan', () => {
+  const text = readIW('SKILL.md');
+  assert.ok(text.includes('workspace_scan'), 'no workspace_scan call');
+  assert.ok(text.includes('workspace <path>'), 'no "workspace <path>" argument');
+});
+
+test('W8: change-recipes.md has a Workspace section with a recipe per workspace finding type', () => {
+  const text = readIW('references/change-recipes.md');
+  const start = text.search(/^#+ Workspace\b/m);
+  assert.ok(start >= 0, 'no "Workspace" heading');
+  const section = text.slice(start);
+  for (const type of ['router_missing', 'router_stale', 'missed_repo_skill', 'name_collision', 'invalid_layout', 'router_conflict']) {
+    assert.ok(section.includes(type), `Workspace section lacks ${type}`);
+  }
+});
+
+test('W8: change-recipes.md keeps repo-level changes as patches on a chore/skills-<repo> branch, never in worktrees', () => {
+  const text = readIW('references/change-recipes.md');
+  const start = text.search(/^#+ Workspace\b/m);
+  assert.ok(start >= 0, 'no "Workspace" heading');
+  const section = text.slice(start);
+  assert.ok(section.includes('chore/skills-'), 'no suggested chore/skills-<norm(G)> branch');
+  assert.ok(section.includes('<details>'), 'repo patches not shown inside <details>');
+  assert.match(section, /apply in the main checkout and open a PR through the repo's normal flow/);
+  assert.match(section, /## Repo skills/);
+});

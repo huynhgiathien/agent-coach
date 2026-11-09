@@ -44,7 +44,7 @@ test('cursor: k1 yields one usage event from tokenCount, unpriced', { skip }, ()
 });
 
 test('cursor: k1 events follow the conversation order (prompt, skill, agent)', { skip }, () => {
-  const order = of('k1').filter((e) => e.kind !== 'usage').map((e) => e.kind);
+  const order = of('k1').filter((e) => e.kind !== 'usage' && e.kind !== 'touch').map((e) => e.kind);
   assert.deepEqual(order, ['prompt', 'skill', 'agent']);
 });
 
@@ -54,6 +54,19 @@ test('cursor: subagent composer k2 yields no prompt; its usage is sub with agent
   const usage = of('k2', 'usage');
   assert.equal(usage.length, 1);
   assert.deepEqual([usage[0].sub, usage[0].agent, usage[0].input, usage[0].output], [true, 'explore', 50, 5]);
+});
+
+test('cursor W6: a read_file_v2 of a SKILL.md is a touch, and the skill event carries its path', { skip }, () => {
+  const touches = of('k1', 'touch');
+  assert.deepEqual(touches.map((e) => [e.path, e.cwd, e.sub]), [['/x/.cursor/skills/cursor-skill/SKILL.md', '/proj', undefined]]);
+  assert.equal(of('k1', 'skill')[0].path, '/x/.cursor/skills/cursor-skill/SKILL.md');
+  assert.equal(of('k1', 'touch')[0].parentSessionId, undefined);
+});
+
+test('cursor W6: a subagent edit_file_v2 with a workspace-relative path is a touch under the cwd, tagged with its parent', { skip }, () => {
+  const touches = of('k2', 'touch');
+  assert.deepEqual(touches.map((e) => [e.path, e.sub, e.parentSessionId]), [['/proj/src/y.ts', true, 'k1']]);
+  for (const e of of('k2')) assert.equal(e.parentSessionId, 'k1', e.kind);
 });
 
 test('cursor: draft composer k3 and display-only bubbles yield nothing', { skip }, () => {

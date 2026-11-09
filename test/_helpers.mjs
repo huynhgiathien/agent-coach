@@ -83,9 +83,19 @@ function buildCursorDb(file) {
     kv('bubbleId:k1:b4', { bubbleId: 'b4', type: 1, text: 'hidden', isDisplayOnly: true, createdAt: iso('09:04') });
 
     putHeader.run('k2', 'ws1', at('09:05'), at('09:06'), 1, 'explore', workspace);
-    kv('composerData:k2', { composerId: 'k2', createdAt: at('09:05'), fullConversationHeadersOnly: [{ bubbleId: 'c1', type: 1 }, { bubbleId: 'c2', type: 2 }] });
+    kv('composerData:k2', {
+      composerId: 'k2',
+      createdAt: at('09:05'),
+      subagentInfo: { subagentTypeName: 'explore', parentComposerId: 'k1' },
+      fullConversationHeadersOnly: [{ bubbleId: 'c1', type: 1 }, { bubbleId: 'c2', type: 2 }, { bubbleId: 'c3', type: 2 }],
+    });
     kv('bubbleId:k2:c1', { bubbleId: 'c1', type: 1, text: 'sub prompt', createdAt: iso('09:05') });
     kv('bubbleId:k2:c2', { bubbleId: 'c2', type: 2, text: '', createdAt: iso('09:06'), tokenCount: { inputTokens: 50, outputTokens: 5 } });
+    // edit_file_v2 records no rawArgs, only a workspace-relative path in params.
+    kv('bubbleId:k2:c3', {
+      bubbleId: 'c3', type: 2, text: '', createdAt: iso('09:06'),
+      toolFormerData: { name: 'edit_file_v2', params: { relativeWorkspacePath: 'src/y.ts' } },
+    });
 
     putHeader.run('k3', 'ws1', at('09:07'), at('09:07'), 0, null, workspace);
     kv('composerData:k3', { composerId: 'k3', createdAt: at('09:07'), isDraft: true, fullConversationHeadersOnly: [{ bubbleId: 'd1', type: 1 }] });
@@ -95,17 +105,126 @@ function buildCursorDb(file) {
   }
 }
 
+// ---- workspace fixture (spec W1–W7): <home>/ws ----
+
+export const WS_PROMPTS = [
+  'fix the build error in the B service',
+  'rename the exported helper in x.ts',
+  'add input validation to the form handler',
+];
+const WS_TOUCHED_A_PROMPT = 'update the A request handler';
+
+const skillMd = (name, description, body = '## Done when\n\n- Verify the result.') =>
+  `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`;
+
+/** omp main session: one typed prompt, then assistant toolCalls (no usage, so global cost totals are unchanged). */
+export function ompSession(id, cwd, isoTs, prompt, toolCalls) {
+  const ts = Date.parse(isoTs);
+  const at = (offsetS) => new Date(ts + offsetS * 1000).toISOString();
+  const lines = [
+    { type: 'title', v: 1, title: 'Workspace fixture session', source: 'auto', updatedAt: at(0), pad: '' },
+    { type: 'session', version: 3, id, timestamp: at(0), cwd, title: 'Workspace fixture session', titleSource: 'auto' },
+    {
+      type: 'message',
+      message: { role: 'user', content: [{ type: 'text', text: prompt }], attribution: 'user', timestamp: ts },
+      id: `${id}-1`, parentId: null, timestamp: at(0),
+    },
+    {
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: toolCalls.map(([name, p], i) => ({ type: 'toolCall', id: `${id}-c${i}`, name, arguments: { path: p, i: 'Working' }, intent: 'x' })),
+        api: 'anthropic-messages', provider: 'anthropic', model: 'claude-test', stopReason: 'toolUse', timestamp: ts + 30_000,
+      },
+      id: `${id}-2`, parentId: `${id}-1`, timestamp: at(30),
+    },
+  ];
+  return `${lines.map((l) => JSON.stringify(l)).join('\n')}\n`;
+}
+
+/**
+ * `<home>/ws`: repoA (.git dir) + its worktree repoA-wt (.git file; its extra wt-only skill must be ignored),
+ * repoB (.git dir, flat .claude/skills/flat.md, no router), notes (no .git), workspace router repo-repoa
+ * (mentions ./repoA and create-pr, not a-skill) and workspace create-pr. Plus 4 omp sessions with cwd <home>/ws:
+ * omp-w1..w3 (2026-10-11..13) edit repoB/src/x.ts and read no skill; omp-w4 edits repoA/x.ts and reads skill://repo-repoa.
+ */
+function buildWorkspace(home) {
+  const ws = path.join(home, 'ws');
+  const put = (rel, text) => {
+    const file = path.join(ws, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  };
+  const repoSkills = (dir) => {
+    put(`${dir}/.claude/skills/a-skill/SKILL.md`, skillMd('a-skill', 'Run the A importer. Use when the user imports A data. Not for B.'));
+    put(`${dir}/.claude/skills/create-pr/SKILL.md`, skillMd('create-pr', 'Open a PR in repoA. Use when the user asks for a PR. Not for other repos.'));
+  };
+
+  fs.mkdirSync(path.join(ws, 'repoA/.git/worktrees/repoA-wt'), { recursive: true });
+  put('repoA/.git/HEAD', 'ref: refs/heads/main\n');
+  put('repoA/CLAUDE.md', '# repoA\n\nThe A service. Node 23.\n');
+  repoSkills('repoA');
+
+  put('repoA-wt/.git', `gitdir: ${path.join(ws, 'repoA/.git/worktrees/repoA-wt')}\n`);
+  put('repoA-wt/CLAUDE.md', '# repoA\n\nThe A service. Node 23.\n');
+  repoSkills('repoA-wt');
+  put('repoA-wt/.claude/skills/wt-only/SKILL.md', skillMd('wt-only', 'Worktree-only skill. Use when never. Not for anything.'));
+
+  fs.mkdirSync(path.join(ws, 'repoB/.git'), { recursive: true });
+  put('repoB/.git/HEAD', 'ref: refs/heads/main\n');
+  put('repoB/CLAUDE.md', '# repoB\n\nThe B service. TypeScript.\n');
+  put('repoB/.claude/skills/flat.md', '# Flat skill\n\nNever loads: not in a <name>/SKILL.md dir.\n');
+  put('repoB/.claude/skills/b-skill/SKILL.md', skillMd('b-skill', 'Deploy the B service. Use when the user deploys B. Not for A.'));
+  put('repoB/src/x.ts', 'export const x = 1;\n');
+
+  put('notes/todo.md', '# notes\n');
+  put('repoA/x.ts', 'export const a = 1;\n');
+
+  put(
+    '.claude/skills/repo-repoa/SKILL.md',
+    skillMd(
+      'repo-repoa',
+      'Overview of the ./repoA repo — the A service. Use when a task involves repoA. Not for other repos.',
+      '## Repo skills\n\n- `create-pr` — open a PR; read ./repoA/.claude/skills/create-pr/SKILL.md\n\n## Done when\n\n- Verify the repo skill was read.',
+    ),
+  );
+  put('.claude/skills/create-pr/SKILL.md', skillMd('create-pr', 'Open a PR anywhere. Use when the user asks for a PR. Not for releases.'));
+
+  // The worktree is the newest member: a representative picked by mtime alone would wrongly read wt-only.
+  fs.utimesSync(path.join(ws, 'repoA'), OLD, OLD);
+
+  const sessions = path.join(home, '.omp/agent/sessions/-ws');
+  fs.mkdirSync(sessions, { recursive: true });
+  WS_PROMPTS.forEach((prompt, i) => {
+    const iso = `2026-10-1${i + 1}T10:00:00.000Z`;
+    fs.writeFileSync(
+      path.join(sessions, `${iso.replace(/[:.]/g, '-')}_omp-w${i + 1}.jsonl`),
+      ompSession(`omp-w${i + 1}`, ws, iso, prompt, [['edit', path.join(ws, 'repoB/src/x.ts')]]),
+    );
+  });
+  fs.writeFileSync(
+    path.join(sessions, '2026-10-14T10-00-00-000Z_omp-w4.jsonl'),
+    ompSession('omp-w4', ws, '2026-10-14T10:00:00.000Z', WS_TOUCHED_A_PROMPT, [
+      ['edit', path.join(ws, 'repoA/x.ts')],
+      ['read', 'skill://repo-repoa'],
+    ]),
+  );
+  return ws;
+}
+
 /**
  * A private copy of the fixture home (committed fixtures are never mutated): aged unused-asset
- * candidates and memories, plus the Cursor chat DB when node:sqlite loads.
- * `coachDir` is a separate empty state dir for AGENT_COACH_HOME.
+ * candidates and memories, the Cursor chat DB when node:sqlite loads, and the `ws` workspace
+ * (`ws` = `<home>/ws`, see buildWorkspace). `coachDir` is a separate empty state dir for AGENT_COACH_HOME.
+ * `home` is a physical path (macOS: /var → /private/var), as session cwds and git `gitdir:` files record it.
  */
 export function makeHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-home-'));
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'coach-home-')));
   fs.cpSync(FIXTURE_HOME, home, { recursive: true });
   for (const rel of AGED) fs.utimesSync(path.join(home, rel), OLD, OLD);
   if (HAS_SQLITE) buildCursorDb(path.join(home, CURSOR_DB));
-  return { home, coachDir: tmpCoachHome() };
+  const ws = buildWorkspace(home);
+  return { home, coachDir: tmpCoachHome(), ws };
 }
 
 export const tmpCoachHome = () => fs.mkdtempSync(path.join(os.tmpdir(), 'agent-coach-test-'));

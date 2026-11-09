@@ -1,4 +1,4 @@
-// S9, S15, S17, S18: bin/agent-coach install-cursor-mcp, check and dashboard.
+// S9, S15, S17, S18, W1, W7: bin/agent-coach install-cursor-mcp, check, dashboard and workspace.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -11,7 +11,12 @@ const CLI = fileURLToPath(new URL('../bin/agent-coach', import.meta.url));
 const SERVER = fileURLToPath(new URL('../server.mjs', import.meta.url));
 
 function cli(home, coachDir, ...args) {
+  return cliIn(undefined, home, coachDir, ...args);
+}
+
+function cliIn(cwd, home, coachDir, ...args) {
   const r = spawnSync(process.execPath, [CLI, ...args], {
+    cwd,
     env: { ...process.env, HOME: home, AGENT_COACH_HOME: coachDir, AGENT_COACH_NO_OPEN: '1' },
     encoding: 'utf8',
     timeout: 60_000,
@@ -159,4 +164,72 @@ test('COACH1-R3 assets lists project assets from the cwds of the last digest', (
   const line = after.stdout.split('\n').find((l) => l.endsWith(`\t${skill}`));
   assert.ok(line, `project skill missing:\n${after.stdout}`);
   assert.match(line, /^skill\trepo-skill\tproject\teditable\t/);
+});
+
+// ---- workspace (W1, W7) ----
+
+test('workspace <ws> prints the markdown scan and exits 0', () => {
+  const { home, coachDir, ws } = makeHome();
+  const r = cli(home, coachDir, 'workspace', ws, '--days', '400');
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes('## Repos'), r.stdout);
+  assert.ok(r.stdout.includes('## Router coverage'), r.stdout);
+  assert.ok(fs.existsSync(path.join(coachDir, 'last-workspace.json')), 'last-workspace.json not written');
+});
+
+test('workspace without a path scans the cwd', () => {
+  const { home, coachDir, ws } = makeHome();
+  const r = cliIn(ws, home, coachDir, 'workspace', '--days', '400');
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes('## Router coverage'), r.stdout);
+});
+
+test('workspace --json --min-count 1 prints the findings as JSON', () => {
+  const { home, coachDir, ws } = makeHome();
+  const r = cli(home, coachDir, 'workspace', ws, '--days', '400', '--min-count', '1', '--json');
+  assert.equal(r.code, 0, r.stderr);
+  const types = new Set(JSON.parse(r.stdout).findings.map((f) => f.type));
+  for (const t of ['router_missing', 'router_stale', 'name_collision', 'invalid_layout', 'missed_repo_skill']) assert.ok(types.has(t), `missing ${t}`);
+});
+
+test('workspace on a non-workspace path prints the error and exits 1', () => {
+  const { home, coachDir, ws } = makeHome();
+  const notes = path.join(ws, 'notes');
+  const r = cli(home, coachDir, 'workspace', notes);
+  assert.equal(r.code, 1);
+  assert.equal(r.stderr.trim(), `error: Not a workspace: ${notes} has 0 git repos (needs 2+)`);
+});
+
+test('examples and decide resolve a workspace finding id with no last-digest.json; dismissed it is gone next scan', () => {
+  const { home, coachDir, ws } = makeHome();
+  const scan = () => {
+    const r = cli(home, coachDir, 'workspace', ws, '--days', '400', '--json');
+    assert.equal(r.code, 0, r.stderr);
+    return JSON.parse(r.stdout);
+  };
+  const f = scan().findings.find((x) => x.type === 'missed_repo_skill');
+  assert.ok(f, 'missed_repo_skill missing');
+  assert.equal(fs.existsSync(path.join(coachDir, 'last-digest.json')), false);
+
+  const ex = cli(home, coachDir, 'examples', f.id);
+  assert.equal(ex.code, 0, ex.stderr);
+  assert.ok(ex.stdout.includes('add input validation to the form handler'), ex.stdout);
+
+  const d = cli(home, coachDir, 'decide', f.id, 'dismissed');
+  assert.equal(d.code, 0, d.stderr);
+  const decision = JSON.parse(fs.readFileSync(path.join(coachDir, 'decisions.json'), 'utf8')).decisions[f.id];
+  assert.equal(decision.snapshot?.type, 'missed_repo_skill');
+  assert.equal(scan().findings.some((x) => x.id === f.id), false, 'dismissed finding reappeared');
+});
+
+test('examples falls through last-digest.json to last-workspace.json', () => {
+  const { home, coachDir, ws } = makeHome();
+  assert.equal(cli(home, coachDir, 'digest', '--days', '400').code, 0);
+  const r = cli(home, coachDir, 'workspace', ws, '--days', '400', '--json');
+  assert.equal(r.code, 0, r.stderr);
+  const f = JSON.parse(r.stdout).findings.find((x) => x.type === 'router_stale');
+  assert.ok(f, 'router_stale missing');
+  const ex = cli(home, coachDir, 'examples', f.id);
+  assert.equal(ex.code, 0, ex.stderr);
+  assert.ok(ex.stdout.includes('a-skill'), ex.stdout);
 });

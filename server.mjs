@@ -7,7 +7,8 @@ import { publishDashboard } from './lib/dashboard.mjs';
 import { SOURCES, buildDigest, digestJson, filterDigest, formatAssets, formatExamples, renderMarkdown } from './lib/digest.mjs';
 import { listAssets } from './lib/inventory.mjs';
 import { auditFile, formatAudit } from './lib/standards.mjs';
-import { readLastDigest, recordDecision } from './lib/state.mjs';
+import { readLastDigest, readLastWorkspace, recordDecision } from './lib/state.mjs';
+import { renderWorkspace, scanWorkspace, workspaceJson } from './lib/workspace.mjs';
 
 const KINDS = ['skill', 'agent', 'command', 'context', 'memory'];
 
@@ -103,20 +104,48 @@ const TOOLS = [
     },
   },
   {
-    name: 'finding_examples',
-    annotations: { title: 'Finding examples', readOnlyHint: true, openWorldHint: false },
+    name: 'workspace_scan',
+    annotations: { title: 'Workspace skill routing scan', readOnlyHint: true, openWorldHint: false },
     description:
-      'Show the stored, redacted examples of one finding from the last usage_digest run: date, CLI, cwd, prompt text, ' +
-      'and the prompt or cost it followed.',
+      'Scan one workspace folder that holds 2+ git repos (worktrees are grouped with their main checkout): repos ' +
+      'without a workspace repo-<name> router skill, routers that do not list the repo skills, skill names in ' +
+      'several scopes (user, workspace, repo), flat .claude/skills/*.md files that never load, and sessions that ' +
+      'worked in a repo without reading its router or repo skills. Each finding has an id for finding_examples ' +
+      'and record_decision. Prompt text is redacted.',
     inputSchema: {
       type: 'object',
       properties: {
-        finding_id: { type: 'string', description: 'Finding id from usage_digest' },
+        path: { type: 'string', description: 'Workspace folder; ~ is expanded' },
+        since_days: { type: 'number', description: 'Days of session history to check for missed repo skills (default 90)' },
+        min_count: { type: 'number', description: 'Minimum sessions that touched a repo before reporting it (default 3)' },
+        format: { type: 'string', enum: ['markdown', 'json'], description: 'Output format (default markdown)' },
+      },
+      required: ['path'],
+    },
+    run: async ({ path: wsPath, since_days = 90, min_count = 3, format = 'markdown' }) => {
+      const scan = await scanWorkspace({ home: os.homedir(), path: wsPath, sinceDays: since_days, minCount: min_count });
+      return format === 'json' ? workspaceJson(scan) : renderWorkspace(scan);
+    },
+  },
+  {
+    name: 'finding_examples',
+    annotations: { title: 'Finding examples', readOnlyHint: true, openWorldHint: false },
+    description:
+      'Show the stored, redacted examples of one finding from the last usage_digest or workspace_scan run: date, ' +
+      'CLI, cwd, prompt text, and the prompt or cost it followed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        finding_id: { type: 'string', description: 'Finding id from usage_digest or workspace_scan' },
         limit: { type: 'number', description: 'Maximum examples (default 20)' },
       },
       required: ['finding_id'],
     },
-    run: async ({ finding_id, limit = 20 }) => formatExamples(await readLastDigest(os.homedir()), finding_id, limit),
+    run: async ({ finding_id, limit = 20 }) => {
+      const home = os.homedir();
+      const [digest, workspace] = await Promise.all([readLastDigest(home), readLastWorkspace(home)]);
+      return formatExamples(digest, finding_id, limit, workspace);
+    },
   },
   {
     name: 'record_decision',
@@ -134,7 +163,7 @@ const TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        finding_id: { type: 'string', description: 'Finding id from usage_digest' },
+        finding_id: { type: 'string', description: 'Finding id from usage_digest or workspace_scan' },
         status: { type: 'string', enum: ['accepted', 'dismissed'] },
         note: { type: 'string', description: 'Optional reason or summary of the change' },
       },

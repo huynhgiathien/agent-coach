@@ -58,3 +58,85 @@ Read the target file before proposing. Every proposal names absolute paths and s
   before → after. Never re-apply the same diff.
 
 Verify each recipe's result with `check_asset` (skills, agents, commands) before reporting it done.
+
+## Workspace
+
+Findings from `workspace_scan` (step 2b). `<ws>` is the scanned folder, `<R>` a repo dir in it and `G` its
+group (the repo plus its worktrees). Workspace-level files (`<ws>/.claude/skills/…`) are edited after the
+user picks them. Repo-level files (anything under `<ws>/<R>/`) are never written: see "Repo-level patches"
+below.
+
+- **`router_missing`**: create the router at the finding's `target`, never somewhere else. It is
+  `<ws>/.claude/skills/repo-<g>/SKILL.md` (`<g>` = the group name lowercased, alphanumerics only), or a
+  kebab-case name such as `repo-omnicasa-web` (with `-2`, `-3`, … if needed) when `repo-<g>` already exists or
+  another repo has the same `<g>`. The `name` frontmatter must equal the target's dir name. Use the format
+  of the existing `repo-*` routers:
+
+  ```markdown
+  ---
+  name: repo-<g>
+  description: Overview of the ./<R> repo — <what it is>. Use when a task involves <domains/keywords>. Not for other repos.
+  ---
+
+  # <R>
+
+  ## Purpose
+  <from the repo's CLAUDE.md or AGENTS.md>
+
+  ## Tech stack
+  <from the repo's CLAUDE.md or AGENTS.md>
+
+  ## Structure
+  <from the repo's CLAUDE.md or AGENTS.md>
+
+  ## Repo skills
+  - `<name>` — <when to use>; read ./<R>/.claude/skills/<name>/SKILL.md
+
+  ## Done when
+  - The matching repo skill was read before working in ./<R>.
+  ```
+
+  One `## Repo skills` line per repo skill in the finding's examples. It must pass `check_asset`.
+- **`router_stale`**: add one line per missing skill (the finding's examples) to the router's
+  `## Repo skills` section, in the same format.
+- **`missed_repo_skill`**: strengthen the router's description so it triggers: name the repo dir (`./<R>`)
+  and add the domain words of the missed prompts (the examples; call `finding_examples` for more). When
+  there is no router, merge this into the `router_missing` proposal for the same repo.
+  - When `outside > 0` (hint `add_rule`), sessions started outside `<ws>` never load workspace skills, so also
+    propose one rule line in the user context file of the CLI the examples come from (omp →
+    `~/.omp/agent/AGENTS.md`, claude → `~/.claude/CLAUDE.md`, codex → `~/.codex/AGENTS.md`, cursor →
+    `~/.cursor/rules/agent-coach.mdc`, created as described for `add_rule` above):
+    "When a task touches <ws>/<R>, first read <ws>/.claude/skills/<router>/SKILL.md (or the repo's own
+    skills under <ws>/<R>/.claude/skills) before editing."
+  - Write one rule per workspace, not one per repo: when several repos of the same workspace have
+    `outside > 0`, a single line names each `<ws>/<R>` with its router.
+- **`name_collision`**: the same skill name in several scopes.
+  - Workspace or user copies: rename one, or merge them into one skill.
+  - A repo copy is never renamed in place. Add a line to that repo's router instead:
+    "in ./<R> use ./<R>/.claude/skills/<n>, not the workspace/user one".
+- **`invalid_layout`**: flat `.claude/skills/<x>.md` files never load as skills.
+  - Workspace (`target.editable: true`): convert each `<x>.md` to `<x>/SKILL.md` with `name` and
+    `description` frontmatter, and move the old file to `.trash`.
+  - Repo (`target.editable: false`): patch only.
+- **`router_conflict`** (judged by you while reading a router and its repo skills; the scanner never emits
+  it): when a router and a repo skill disagree on a fact, fix the router directly and give a repo patch for
+  the repo skill.
+
+### Repo-level patches
+
+Never write a file inside a repo, and never touch a worktree copy (a sibling dir whose `.git` file points to
+`<main>/.git/worktrees/…`). Show each repo-level change as a unified diff against the main checkout:
+
+```markdown
+<details><summary>Patch for ./<R> (suggested branch chore/skills-<g>)</summary>
+
+    --- a/.claude/skills/<n>/SKILL.md
+    +++ b/.claude/skills/<n>/SKILL.md
+    @@ …
+
+</details>
+```
+
+Suggest the branch `chore/skills-<g>` and say:
+"apply in the main checkout and open a PR through the repo's normal flow".
+Record `accepted` for such a finding only after the user confirms the patch was applied.
